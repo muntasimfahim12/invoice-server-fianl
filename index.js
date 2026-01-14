@@ -2,7 +2,8 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
-const PDFDocument = require('pdfkit'); // শুধু এটি যোগ করা হয়েছে PDF এর জন্য
+const PDFDocument = require('pdfkit');
+const nodemailer = require('nodemailer');
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -32,14 +33,21 @@ async function connectDB() {
   return db;
 }
 
+// --- Nodemailer Transporter ---
+const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+        user: process.env.EMAIL_USER, 
+        pass: process.env.EMAIL_PASS  
+    }
+});
+
 // --- Root ---
 app.get('/', (req, res) => {
   res.send('🚀 Vault Server Running');
 });
 
-/**
- * 1️⃣ GET ALL CLIENTS
- */
+/** 1️⃣ GET ALL CLIENTS */
 app.get('/clinets', async (req, res) => {
   try {
     const { search, status } = req.query;
@@ -63,9 +71,7 @@ app.get('/clinets', async (req, res) => {
   }
 });
 
-/**
- * 2️⃣ GET SINGLE CLIENT
- */
+/** 2️⃣ GET SINGLE CLIENT */
 app.get('/clinets/:id', async (req, res) => {
   try {
     if (!ObjectId.isValid(req.params.id))
@@ -83,9 +89,7 @@ app.get('/clinets/:id', async (req, res) => {
   }
 });
 
-/**
- * 3️⃣ CREATE CLIENT (AUTO PROJECT ID)
- */
+/** 3️⃣ CREATE CLIENT */
 app.post('/clinets', async (req, res) => {
   try {
     const database = await connectDB();
@@ -113,9 +117,7 @@ app.post('/clinets', async (req, res) => {
   }
 });
 
-/**
- * 4️⃣ UPDATE CLIENT (SAFE PROJECT HANDLING)
- */
+/** 4️⃣ UPDATE CLIENT */
 app.put('/clinets/:id', async (req, res) => {
   try {
     if (!ObjectId.isValid(req.params.id))
@@ -125,11 +127,7 @@ app.put('/clinets/:id', async (req, res) => {
     const collection = database.collection("clinets");
 
     const { _id, projects, ...rest } = req.body;
-
-    const updateData = {
-      ...rest,
-      updatedAt: new Date()
-    };
+    const updateData = { ...rest, updatedAt: new Date() };
 
     if (projects) {
       updateData.projects = projects.map(p => ({
@@ -157,9 +155,7 @@ app.put('/clinets/:id', async (req, res) => {
   }
 });
 
-/**
- * 5️⃣ UPDATE SINGLE PROJECT STATUS (FIXED)
- */
+/** 5️⃣ UPDATE SINGLE PROJECT STATUS */
 app.put('/clinets/:clientId/projects/:projectId', async (req, res) => {
   const { clientId, projectId } = req.params;
   const { status } = req.body;
@@ -173,9 +169,7 @@ app.put('/clinets/:clientId/projects/:projectId', async (req, res) => {
         _id: new ObjectId(clientId),
         projects: { $elemMatch: { _id: projectId } }
       },
-      {
-        $set: { "projects.$.status": status }
-      }
+      { $set: { "projects.$.status": status } }
     );
 
     if (!result.matchedCount)
@@ -187,9 +181,7 @@ app.put('/clinets/:clientId/projects/:projectId', async (req, res) => {
   }
 });
 
-/**
- * 6️⃣ DELETE CLIENT
- */
+/** 6️⃣ DELETE CLIENT */
 app.delete('/clinets/:id', async (req, res) => {
   try {
     if (!ObjectId.isValid(req.params.id))
@@ -207,6 +199,8 @@ app.delete('/clinets/:id', async (req, res) => {
     res.status(500).send({ error: "Delete failed" });
   }
 });
+
+/** --- INVOICES SECTION --- */
 
 app.get('/invoices', async (req, res) => {
   try {
@@ -231,7 +225,6 @@ app.get('/invoices', async (req, res) => {
   }
 });
 
-/** 6. GET SINGLE INVOICE (By invoiceId or ObjectId) */
 app.get('/invoices/:id', async (req, res) => {
   try {
     const database = await connectDB();
@@ -248,7 +241,6 @@ app.get('/invoices/:id', async (req, res) => {
   }
 });
 
-/** 7. CREATE NEW INVOICE */
 app.post('/invoices', async (req, res) => {
   try {
     const database = await connectDB();
@@ -267,25 +259,120 @@ app.post('/invoices', async (req, res) => {
   }
 });
 
-/** 8. UPDATE INVOICE STATUS */
+app.put('/invoices/:id', async (req, res) => {
+  try {
+    const database = await connectDB();
+    const collection = database.collection("invoices");
+    
+    const query = ObjectId.isValid(req.params.id)
+      ? { _id: new ObjectId(req.params.id) }
+      : { invoiceId: req.params.id };
+
+    const { _id, ...updateData } = req.body; 
+
+    const result = await collection.updateOne(
+      query,
+      { 
+        $set: { 
+          ...updateData, 
+          updatedAt: new Date() 
+        } 
+      }
+    );
+
+    if (result.matchedCount === 0) return res.status(404).send({ error: "Invoice not found" });
+
+    res.send({ message: "✅ Ledger updated successfully", result });
+  } catch (err) {
+    res.status(500).send({ error: "Update failed", message: err.message });
+  }
+});
+
+/** 📧 SEND INVOICE EMAIL **/
+app.post('/invoices/send-email', async (req, res) => {
+    try {
+        const inv = req.body;
+        // ফ্রন্টএন্ড থেকে আসা ডাটা অনুযায়ী প্রপার্টি চেক করা
+        const clientName = inv.client?.name || inv.clientName;
+        const clientEmail = inv.client?.email || inv.clientEmail;
+
+        if(!clientEmail) return res.status(400).send({ error: "Client email is missing" });
+
+        const itemRows = (inv.items || []).map(item => `
+            <tr>
+                <td style="padding: 10px; border-bottom: 1px solid #eee;">${item.name}</td>
+                <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: center;">${item.qty}</td>
+                <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: right;">${inv.currency} ${(item.qty * (item.price || 0)).toLocaleString()}</td>
+            </tr>
+        `).join('');
+
+        const emailHtml = `
+            <div style="font-family: 'Helvetica', sans-serif; max-width: 600px; margin: auto; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden;">
+                <div style="background-color: #4177BC; padding: 30px; color: white; text-align: center;">
+                    <h1 style="margin: 0; font-size: 24px; text-transform: uppercase;">Invoice Request</h1>
+                    <p style="margin: 5px 0 0; opacity: 0.8;">Invoice ID: ${inv.invoiceId}</p>
+                </div>
+                <div style="padding: 30px;">
+                    <p>Hi <strong>${clientName}</strong>,</p>
+                    <p>You have received a new invoice for the project: <em>${inv.projectTitle}</em>.</p>
+                    
+                    <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+                        <thead>
+                            <tr style="background-color: #f8fafc;">
+                                <th style="padding: 10px; text-align: left; border-bottom: 2px solid #4177BC;">Description</th>
+                                <th style="padding: 10px; text-align: center; border-bottom: 2px solid #4177BC;">Qty</th>
+                                <th style="padding: 10px; text-align: right; border-bottom: 2px solid #4177BC;">Total</th>
+                            </tr>
+                        </thead>
+                        <tbody>${itemRows}</tbody>
+                    </table>
+
+                    <div style="text-align: right; margin-top: 20px;">
+                        <h2 style="color: #4177BC; margin: 10px 0;">Total Due: ${inv.currency} ${inv.remainingDue?.toLocaleString()}</h2>
+                    </div>
+                </div>
+                <div style="background-color: #f8fafc; padding: 20px; text-align: center; font-size: 12px; color: #94a3b8; border-top: 1px solid #e2e8f0;">
+                    Sent via LedgerPRO | System Automated Email
+                </div>
+            </div>
+        `;
+
+        const mailOptions = {
+            from: `"Invoicing System" <${process.env.EMAIL_USER}>`,
+            to: clientEmail,
+            subject: `New Invoice ${inv.invoiceId}`,
+            html: emailHtml
+        };
+
+        await transporter.sendMail(mailOptions);
+        res.status(200).send({ message: "✅ Email sent successfully" });
+    } catch (err) {
+        console.error(err);
+        res.status(500).send({ error: "Failed to send email" });
+    }
+});
+
 app.patch('/invoices/:id', async (req, res) => {
   try {
     const database = await connectDB();
     const collection = database.collection("invoices");
     const { status, receivedAmount, remainingDue } = req.body;
 
+    const query = ObjectId.isValid(req.params.id)
+      ? { _id: new ObjectId(req.params.id) }
+      : { invoiceId: req.params.id };
+
     const result = await collection.updateOne(
-      { invoiceId: req.params.id },
+      query,
       { $set: { status, receivedAmount, remainingDue, updatedAt: new Date() } }
     );
 
-    res.send({ message: "✅ Invoice updated", result });
+    res.send({ message: "✅ Invoice status patched", result });
   } catch {
-    res.status(500).send({ error: "Update failed" });
+    res.status(500).send({ error: "Patch failed" });
   }
 });
 
-/** 9. DELETE INVOICE */
 app.delete('/invoices/:id', async (req, res) => {
   try {
     const database = await connectDB();
@@ -301,7 +388,7 @@ app.delete('/invoices/:id', async (req, res) => {
   }
 });
 
-/** 10. DOWNLOAD INVOICE PDF (MODERN DESIGN) */
+/** 📥 FIX: DOWNLOAD INVOICE PDF (Path Changed to match frontend) */
 app.get('/invoices/:id/download', async (req, res) => {
   try {
     const database = await connectDB();
@@ -320,72 +407,69 @@ app.get('/invoices/:id/download', async (req, res) => {
 
     doc.pipe(res);
 
-    // --- Modern Header ---
-    doc.rect(0, 0, 600, 120).fill('#F4F7FB'); // হালকা ব্লু ব্যাকগ্রাউন্ড
+    // Header
+    doc.rect(0, 0, 600, 120).fill('#F4F7FB');
     doc.fillColor('#1A3353').fontSize(24).font('Helvetica-Bold').text('INVOICE', 40, 45);
-
     doc.fontSize(10).font('Helvetica').fillColor('#555555');
     doc.text(`Invoice Number: ${inv.invoiceId}`, 40, 75);
     doc.text(`Issued Date: ${new Date(inv.createdAt).toLocaleDateString()}`, 40, 90);
 
-    // Status Badge (Paid/Unpaid)
     const statusColor = inv.status === 'Paid' ? '#2ECC71' : '#E74C3C';
     doc.rect(450, 45, 100, 25).fill(statusColor);
     doc.fillColor('#FFFFFF').fontSize(10).font('Helvetica-Bold').text(inv.status.toUpperCase(), 450, 52, { width: 100, align: 'center' });
 
-    // --- Bill To & Details ---
+    // Client Details
     doc.moveDown(5);
     doc.fillColor('#1A3353').fontSize(12).font('Helvetica-Bold').text('CLIENT DETAILS', 40, 150);
     doc.strokeColor('#1A3353').lineWidth(1).moveTo(40, 165).lineTo(150, 165).stroke();
-
     doc.moveDown(1);
-    doc.fillColor('#000000').fontSize(14).font('Helvetica-Bold').text(inv.client?.name || 'Client Name', 40, 175);
+    doc.fillColor('#000000').fontSize(14).font('Helvetica-Bold').text(inv.client?.name || inv.clientName || 'Client Name', 40, 175);
     doc.fontSize(10).font('Helvetica').fillColor('#555555').text(`Project: ${inv.projectTitle}`, 40, 195);
-    if (inv.client?.email) doc.text(`Email: ${inv.client.email}`, 40, 210);
 
-    // --- Table Header ---
+    // Table
     const tableTop = 260;
-    doc.rect(40, tableTop, 515, 30).fill('#1A3353'); // নেভি ব্লু হেডার
+    doc.rect(40, tableTop, 515, 30).fill('#1A3353');
     doc.fillColor('#FFFFFF').fontSize(11).font('Helvetica-Bold').text('DESCRIPTION', 55, tableTop + 10);
     doc.text('TOTAL AMOUNT', 400, tableTop + 10, { width: 140, align: 'right' });
 
-    // --- Table Row ---
-    const rowTop = tableTop + 45;
-    doc.fillColor('#000000').fontSize(10).font('Helvetica').text(inv.projectTitle, 55, rowTop);
-    doc.font('Helvetica-Bold').text(`${inv.currency} ${inv.grandTotal?.toLocaleString()}`, 400, rowTop, { width: 140, align: 'right' });
+    let rowTop = tableTop + 45;
+    if (inv.items && inv.items.length > 0) {
+        inv.items.forEach(item => {
+            doc.fillColor('#000000').fontSize(10).font('Helvetica').text(`${item.name} (x${item.qty})`, 55, rowTop);
+            doc.font('Helvetica-Bold').text(`${inv.currency} ${(item.qty * item.price).toLocaleString()}`, 400, rowTop, { width: 140, align: 'right' });
+            rowTop += 25;
+        });
+    } else {
+        doc.fillColor('#000000').fontSize(10).font('Helvetica').text(inv.projectTitle, 55, rowTop);
+        doc.font('Helvetica-Bold').text(`${inv.currency} ${inv.grandTotal?.toLocaleString()}`, 400, rowTop, { width: 140, align: 'right' });
+        rowTop += 25;
+    }
 
-    
-    doc.strokeColor('#EEEEEE').lineWidth(1).moveTo(40, rowTop + 20).lineTo(555, rowTop + 20).stroke();
+    doc.strokeColor('#EEEEEE').lineWidth(1).moveTo(40, rowTop + 10).lineTo(555, rowTop + 10).stroke();
 
-    // --- Summary Section ---
-    const summaryTop = rowTop + 60;
-
-    // Received Amount
+    // Summary
+    const summaryTop = rowTop + 40;
     doc.fillColor('#555555').font('Helvetica').text('Received Amount:', 350, summaryTop);
     doc.fillColor('#000000').text(`${inv.currency} ${inv.receivedAmount?.toLocaleString() || 0}`, 450, summaryTop, { width: 100, align: 'right' });
 
-    // Remaining Due
     doc.fillColor('#555555').text('Remaining Due:', 350, summaryTop + 20);
     doc.fillColor('#E74C3C').font('Helvetica-Bold').text(`${inv.currency} ${inv.remainingDue?.toLocaleString() || 0}`, 450, summaryTop + 20, { width: 100, align: 'right' });
 
-    // Grand Total Box
     doc.rect(340, summaryTop + 45, 215, 40).fill('#1A3353');
     doc.fillColor('#FFFFFF').fontSize(12).text('TOTAL BALANCE', 355, summaryTop + 58);
     doc.fontSize(14).text(`${inv.currency} ${inv.grandTotal?.toLocaleString()}`, 440, summaryTop + 57, { width: 100, align: 'right' });
 
-    // --- Footer ---
-    const footerTop = 750;
-    doc.strokeColor('#EEEEEE').lineWidth(1).moveTo(40, footerTop).lineTo(555, footerTop).stroke();
-    doc.fillColor('#999999').fontSize(9).font('Helvetica').text('This is a computer-generated invoice, no signature required.', 40, footerTop + 15, { align: 'center', width: 515 });
-    doc.fillColor('#1A3353').font('Helvetica-Bold').text('Thank you for choosing our services!', 40, footerTop + 30, { align: 'center', width: 515 });
+    // Footer
+    doc.strokeColor('#EEEEEE').lineWidth(1).moveTo(40, 750).lineTo(555, 750).stroke();
+    doc.fillColor('#999999').fontSize(9).text('This is a computer-generated invoice.', 40, 765, { align: 'center', width: 515 });
 
     doc.end();
   } catch (err) {
-    console.error("PDF Error:", err);
+    console.error(err);
     res.status(500).send({ error: "Download failed" });
   }
 });
-// --- START SERVER ---
+
 app.listen(port, () => {
   console.log(`🚀 Server running on http://localhost:${port}`);
 });
