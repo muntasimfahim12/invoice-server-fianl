@@ -35,11 +35,11 @@ async function connectDB() {
 
 // --- Nodemailer Transporter ---
 const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-        user: process.env.EMAIL_USER, 
-        pass: process.env.EMAIL_PASS  
-    }
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
+  }
 });
 
 // --- Root ---
@@ -116,6 +116,7 @@ app.post('/clinets', async (req, res) => {
     res.status(500).send({ error: "Failed to add client" });
   }
 });
+
 
 /** 4️⃣ UPDATE CLIENT */
 app.put('/clinets/:id', async (req, res) => {
@@ -263,20 +264,20 @@ app.put('/invoices/:id', async (req, res) => {
   try {
     const database = await connectDB();
     const collection = database.collection("invoices");
-    
+
     const query = ObjectId.isValid(req.params.id)
       ? { _id: new ObjectId(req.params.id) }
       : { invoiceId: req.params.id };
 
-    const { _id, ...updateData } = req.body; 
+    const { _id, ...updateData } = req.body;
 
     const result = await collection.updateOne(
       query,
-      { 
-        $set: { 
-          ...updateData, 
-          updatedAt: new Date() 
-        } 
+      {
+        $set: {
+          ...updateData,
+          updatedAt: new Date()
+        }
       }
     );
 
@@ -290,15 +291,14 @@ app.put('/invoices/:id', async (req, res) => {
 
 /** 📧 SEND INVOICE EMAIL **/
 app.post('/invoices/send-email', async (req, res) => {
-    try {
-        const inv = req.body;
-        // ফ্রন্টএন্ড থেকে আসা ডাটা অনুযায়ী প্রপার্টি চেক করা
-        const clientName = inv.client?.name || inv.clientName;
-        const clientEmail = inv.client?.email || inv.clientEmail;
+  try {
+    const inv = req.body;
+    const clientName = inv.client?.name || inv.clientName;
+    const clientEmail = inv.client?.email || inv.clientEmail;
 
-        if(!clientEmail) return res.status(400).send({ error: "Client email is missing" });
+    if (!clientEmail) return res.status(400).send({ error: "Client email is missing" });
 
-        const itemRows = (inv.items || []).map(item => `
+    const itemRows = (inv.items || []).map(item => `
             <tr>
                 <td style="padding: 10px; border-bottom: 1px solid #eee;">${item.name}</td>
                 <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: center;">${item.qty}</td>
@@ -306,7 +306,7 @@ app.post('/invoices/send-email', async (req, res) => {
             </tr>
         `).join('');
 
-        const emailHtml = `
+    const emailHtml = `
             <div style="font-family: 'Helvetica', sans-serif; max-width: 600px; margin: auto; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden;">
                 <div style="background-color: #4177BC; padding: 30px; color: white; text-align: center;">
                     <h1 style="margin: 0; font-size: 24px; text-transform: uppercase;">Invoice Request</h1>
@@ -337,19 +337,19 @@ app.post('/invoices/send-email', async (req, res) => {
             </div>
         `;
 
-        const mailOptions = {
-            from: `"Invoicing System" <${process.env.EMAIL_USER}>`,
-            to: clientEmail,
-            subject: `New Invoice ${inv.invoiceId}`,
-            html: emailHtml
-        };
+    const mailOptions = {
+      from: `"Invoicing System" <${process.env.EMAIL_USER}>`,
+      to: clientEmail,
+      subject: `New Invoice ${inv.invoiceId}`,
+      html: emailHtml
+    };
 
-        await transporter.sendMail(mailOptions);
-        res.status(200).send({ message: "✅ Email sent successfully" });
-    } catch (err) {
-        console.error(err);
-        res.status(500).send({ error: "Failed to send email" });
-    }
+    await transporter.sendMail(mailOptions);
+    res.status(200).send({ message: "✅ Email sent successfully" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ error: "Failed to send email" });
+  }
 });
 
 app.patch('/invoices/:id', async (req, res) => {
@@ -434,15 +434,15 @@ app.get('/invoices/:id/download', async (req, res) => {
 
     let rowTop = tableTop + 45;
     if (inv.items && inv.items.length > 0) {
-        inv.items.forEach(item => {
-            doc.fillColor('#000000').fontSize(10).font('Helvetica').text(`${item.name} (x${item.qty})`, 55, rowTop);
-            doc.font('Helvetica-Bold').text(`${inv.currency} ${(item.qty * item.price).toLocaleString()}`, 400, rowTop, { width: 140, align: 'right' });
-            rowTop += 25;
-        });
-    } else {
-        doc.fillColor('#000000').fontSize(10).font('Helvetica').text(inv.projectTitle, 55, rowTop);
-        doc.font('Helvetica-Bold').text(`${inv.currency} ${inv.grandTotal?.toLocaleString()}`, 400, rowTop, { width: 140, align: 'right' });
+      inv.items.forEach(item => {
+        doc.fillColor('#000000').fontSize(10).font('Helvetica').text(`${item.name} (x${item.qty})`, 55, rowTop);
+        doc.font('Helvetica-Bold').text(`${inv.currency} ${(item.qty * item.price).toLocaleString()}`, 400, rowTop, { width: 140, align: 'right' });
         rowTop += 25;
+      });
+    } else {
+      doc.fillColor('#000000').fontSize(10).font('Helvetica').text(inv.projectTitle, 55, rowTop);
+      doc.font('Helvetica-Bold').text(`${inv.currency} ${inv.grandTotal?.toLocaleString()}`, 400, rowTop, { width: 140, align: 'right' });
+      rowTop += 25;
     }
 
     doc.strokeColor('#EEEEEE').lineWidth(1).moveTo(40, rowTop + 10).lineTo(555, rowTop + 10).stroke();
