@@ -470,6 +470,45 @@ app.get('/invoices/:id/download', async (req, res) => {
   }
 });
 
+/** 🚀 GET ALL PROJECTS FROM CLIENTS COLLECTION */
+app.get('/projects', async (req, res) => {
+  try {
+    const database = await connectDB();
+    const collection = database.collection("clinets"); // আপনার কালেকশন নাম
+
+    // ১. সব ক্লায়েন্ট নিয়ে আসা যাদের অন্তত একটি প্রোজেক্ট আছে
+    const clients = await collection.find({ "projects.0": { $exists: true } }).toArray();
+
+    // ২. সব ক্লায়েন্টের ভেতর থেকে প্রোজেক্টগুলোকে বের করে একটি লিস্ট তৈরি করা
+    let allProjects = [];
+
+    clients.forEach(client => {
+      if (client.projects && Array.isArray(client.projects)) {
+        client.projects.forEach(project => {
+          allProjects.push({
+            _id: project._id, // প্রোজেক্ট আইডি
+            title: project.name, // আপনি মডেল-এ 'name' ব্যবহার করেছেন
+            description: project.description,
+            budget: project.budget,
+            status: project.status || "Active",
+            deadline: project.deadline || "Not Set", // যদি থাকে
+            progress: project.progress || 0, // প্রগ্রেস বার দেখানোর জন্য
+            clientName: client.name, // কোন ক্লায়েন্টের প্রোজেক্ট তা চেনার জন্য
+            clientId: client._id
+          });
+        });
+      }
+    });
+
+    // ৩. লেটেস্ট প্রোজেক্টগুলো আগে দেখানোর জন্য সর্ট করা
+    res.send(allProjects.reverse());
+
+  } catch (err) {
+    console.error("Project Fetch Error:", err);
+    res.status(500).send({ error: "Failed to fetch projects from clients collection" });
+  }
+});
+
 app.listen(port, () => {
   console.log(`🚀 Server running on http://localhost:${port}`);
 });
