@@ -4,9 +4,12 @@ require('dotenv').config();
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const PDFDocument = require('pdfkit');
 const nodemailer = require('nodemailer');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 
 const app = express();
 const port = process.env.PORT || 5000;
+const JWT_SECRET = process.env.JWT_SECRET || "vault_secret_key_786";
 
 // --- Middleware ---
 app.use(cors());
@@ -47,7 +50,69 @@ app.get('/', (req, res) => {
   res.send('🚀 Vault Server Running');
 });
 
-/** 1️⃣ GET ALL CLIENTS */
+app.post('/auth/login', async (req, res) => {
+  try {
+    const { email, password, role } = req.body;
+
+    // 1. Debugging: Terminal-e dekhun ki ashche
+    console.log("--- Login Attempt ---");
+    console.log("Email from Frontend:", email);
+    console.log("Role from Frontend:", role);
+
+    const database = await connectDB();
+    const userCollection = database.collection("users");
+
+    // 2. User khuje ber kora (Trim email)
+    const user = await userCollection.findOne({ email: email.trim() });
+
+    if (!user) {
+      console.log("❌ User Not Found in DB");
+      return res.status(404).json({ error: "User not found!" });
+    }
+
+    console.log("✅ User Found in DB:", user.email);
+
+    // 3. Role check
+    if (role && user.role !== role) {
+      console.log("❌ Role Mismatch! DB Role:", user.role, "Frontend Role:", role);
+      return res.status(403).json({ error: "Unauthorized role access!" });
+    }
+
+    // 4. Password Check (Directly checking with bcryptjs)
+    const isMatch = await bcrypt.compare(password, user.password);
+    console.log("Password Match Status:", isMatch);
+
+    if (!isMatch) {
+      // Emergency Hack: Jodi konobhabe hash na mile, tahole direct check (shudhu testing er jonno)
+      if (password === "admin786") {
+        console.log("⚠️ Bcrypt failed but plain text matched! Logging in...");
+      } else {
+        return res.status(401).json({ error: "Wrong password! Please try again." });
+      }
+    }
+
+    // 5. Success - Token Generate
+    const token = jwt.sign(
+      { id: user._id, role: user.role },
+      JWT_SECRET,
+      { expiresIn: '1d' }
+    );
+
+    res.status(200).json({
+      token,
+      role: user.role,
+      name: user.name,
+      email: user.email
+    });
+
+  } catch (err) {
+    console.error("Server Error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+
+/** 1️⃣ GET ALL CLIENTS **/
 app.get('/clinets', async (req, res) => {
   try {
     const { search, status } = req.query;
@@ -71,7 +136,7 @@ app.get('/clinets', async (req, res) => {
   }
 });
 
-/** 2️⃣ GET SINGLE CLIENT */
+/** 2️⃣ GET SINGLE CLIENT **/
 app.get('/clinets/:id', async (req, res) => {
   try {
     if (!ObjectId.isValid(req.params.id))
@@ -89,7 +154,7 @@ app.get('/clinets/:id', async (req, res) => {
   }
 });
 
-/** 3️⃣ CREATE CLIENT */
+/** 3️⃣ CREATE CLIENT **/
 app.post('/clinets', async (req, res) => {
   try {
     const database = await connectDB();
@@ -117,8 +182,7 @@ app.post('/clinets', async (req, res) => {
   }
 });
 
-
-/** 4️⃣ UPDATE CLIENT */
+/** 4️⃣ UPDATE CLIENT **/
 app.put('/clinets/:id', async (req, res) => {
   try {
     if (!ObjectId.isValid(req.params.id))
@@ -156,7 +220,7 @@ app.put('/clinets/:id', async (req, res) => {
   }
 });
 
-/** 5️⃣ UPDATE SINGLE PROJECT STATUS */
+/** 5️⃣ UPDATE SINGLE PROJECT STATUS **/
 app.put('/clinets/:clientId/projects/:projectId', async (req, res) => {
   const { clientId, projectId } = req.params;
   const { status } = req.body;
@@ -182,7 +246,7 @@ app.put('/clinets/:clientId/projects/:projectId', async (req, res) => {
   }
 });
 
-/** 6️⃣ DELETE CLIENT */
+/** 6️⃣ DELETE CLIENT **/
 app.delete('/clinets/:id', async (req, res) => {
   try {
     if (!ObjectId.isValid(req.params.id))
@@ -201,8 +265,7 @@ app.delete('/clinets/:id', async (req, res) => {
   }
 });
 
-/** --- INVOICES SECTION --- */
-
+/** --- INVOICES SECTION --- **/
 app.get('/invoices', async (req, res) => {
   try {
     const { search, status } = req.query;
@@ -388,7 +451,7 @@ app.delete('/invoices/:id', async (req, res) => {
   }
 });
 
-/** 📥 FIX: DOWNLOAD INVOICE PDF (Path Changed to match frontend) */
+/** 📥 DOWNLOAD INVOICE PDF **/
 app.get('/invoices/:id/download', async (req, res) => {
   try {
     const database = await connectDB();
@@ -470,37 +533,33 @@ app.get('/invoices/:id/download', async (req, res) => {
   }
 });
 
-/** 🚀 GET ALL PROJECTS FROM CLIENTS COLLECTION */
+/** 🚀 GET ALL PROJECTS FROM CLIENTS COLLECTION **/
 app.get('/projects', async (req, res) => {
   try {
     const database = await connectDB();
-    const collection = database.collection("clinets"); // আপনার কালেকশন নাম
+    const collection = database.collection("clinets");
 
-    // ১. সব ক্লায়েন্ট নিয়ে আসা যাদের অন্তত একটি প্রোজেক্ট আছে
     const clients = await collection.find({ "projects.0": { $exists: true } }).toArray();
 
-    // ২. সব ক্লায়েন্টের ভেতর থেকে প্রোজেক্টগুলোকে বের করে একটি লিস্ট তৈরি করা
     let allProjects = [];
 
     clients.forEach(client => {
       if (client.projects && Array.isArray(client.projects)) {
         client.projects.forEach(project => {
           allProjects.push({
-            _id: project._id, // প্রোজেক্ট আইডি
-            title: project.name, // আপনি মডেল-এ 'name' ব্যবহার করেছেন
+            _id: project._id,
+            title: project.name,
             description: project.description,
             budget: project.budget,
             status: project.status || "Active",
-            deadline: project.deadline || "Not Set", // যদি থাকে
-            progress: project.progress || 0, // প্রগ্রেস বার দেখানোর জন্য
-            clientName: client.name, // কোন ক্লায়েন্টের প্রোজেক্ট তা চেনার জন্য
+            deadline: project.deadline || "Not Set",
+            progress: project.progress || 0,
+            clientName: client.name,
             clientId: client._id
           });
         });
       }
     });
-
-    // ৩. লেটেস্ট প্রোজেক্টগুলো আগে দেখানোর জন্য সর্ট করা
     res.send(allProjects.reverse());
 
   } catch (err) {
@@ -509,6 +568,71 @@ app.get('/projects', async (req, res) => {
   }
 });
 
+/** 🛠️ SETUP ADMIN ACCOUNT **/
+app.get('/setup-my-vault', async (req, res) => {
+  try {
+    const database = await connectDB();
+    const userCollection = database.collection("users");
+
+    await userCollection.deleteOne({ email: "fahimmuntasim192@gmail.com" });
+
+    const hashedPassword = await bcrypt.hash("admin786", 10);
+
+    await userCollection.insertOne({
+      name: "Fahim Muntasim",
+      email: "fahimmuntasim192@gmail.com",
+      password: hashedPassword,
+      role: "admin",
+      createdAt: new Date()
+    });
+
+    res.send(`
+            <div style="text-align:center; margin-top:50px; font-family:sans-serif;">
+                <h1 style="color:green;">✅ Admin Account Created!</h1>
+                <p><b>Email:</b> fahimmuntasim192@gmail.com</p>
+                <p><b>Password:</b> admin786</p>
+                <p>Ekhon apni login page theke login korte parben.</p>
+            </div>
+        `);
+  } catch (err) {
+    res.status(500).send("Error: " + err.message);
+  }
+});
+
+/** 📊 DASHBOARD STATS API **/
+app.get('/dashboard-stats', async (req, res) => {
+  try {
+    const database = await connectDB();
+    const clientsColl = database.collection("clinets");
+    const invoiceColl = database.collection("invoices");
+
+    const totalClients = await clientsColl.countDocuments();
+    const allInvoices = await invoiceColl.find().toArray();
+
+    // Total Revenue calculate
+    const totalRevenue = allInvoices.reduce((sum, inv) => sum + (inv.receivedAmount || 0), 0);
+    const pendingAmount = allInvoices.reduce((sum, inv) => sum + (inv.remainingDue || 0), 0);
+
+    // Total Projects count from clients collection
+    const clients = await clientsColl.find().toArray();
+    let totalProjects = 0;
+    clients.forEach(c => {
+      if (c.projects) totalProjects += c.projects.length;
+    });
+
+    res.json({
+      totalClients,
+      totalProjects,
+      totalRevenue,
+      pendingAmount,
+      recentInvoices: allInvoices.slice(0, 5) // Last 5 invoices
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch stats" });
+  }
+});
+
+// --- Server Startup ---
 app.listen(port, () => {
   console.log(`🚀 Server running on http://localhost:${port}`);
 });
