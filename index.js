@@ -12,7 +12,13 @@ const port = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || "vault_secret_key_786";
 
 // --- Middleware ---
-app.use(cors());
+// CORS logic simplify kora hoyeche jate frontend theke connection block na hoy
+app.use(cors({
+  origin: true, 
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  credentials: true
+}));
+
 app.use(express.json());
 
 // --- MongoDB URI ---
@@ -30,10 +36,15 @@ let db;
 
 async function connectDB() {
   if (db) return db;
-  await client.connect();
-  db = client.db("invoice");
-  console.log("✅ MongoDB Connected");
-  return db;
+  try {
+    await client.connect();
+    db = client.db("invoice");
+    console.log("✅ MongoDB Connected");
+    return db;
+  } catch (err) {
+    console.error("❌ MongoDB Connection Error:", err);
+    throw err;
+  }
 }
 
 // --- Nodemailer Transporter ---
