@@ -14,7 +14,7 @@ const JWT_SECRET = process.env.JWT_SECRET || "vault_secret_key_786";
 // --- Middleware ---
 // CORS logic simplify kora hoyeche jate frontend theke connection block na hoy
 app.use(cors({
-  origin: true, 
+  origin: true,
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
   credentials: true
 }));
@@ -164,18 +164,22 @@ app.get('/clinets/:id', async (req, res) => {
     res.status(500).send({ error: "Server error" });
   }
 });
-
-/** 3️⃣ CREATE CLIENT **/
+/** 3️⃣ CREATE CLIENT (With Professional Dynamic Welcome Email) **/
 app.post('/clinets', async (req, res) => {
   try {
     const database = await connectDB();
     const collection = database.collection("clinets");
 
+    const {
+      name, email, portalEmail, password, projects,
+      sendAutomationEmail
+    } = req.body;
+
     const newClient = {
       ...req.body,
       status: req.body.status || "Active",
       createdAt: new Date(),
-      projects: (req.body.projects || []).map(p => ({
+      projects: (projects || []).map(p => ({
         _id: new ObjectId().toString(),
         name: p.name,
         budget: p.budget,
@@ -187,9 +191,75 @@ app.post('/clinets', async (req, res) => {
     };
 
     const result = await collection.insertOne(newClient);
-    res.status(201).send(result);
-  } catch {
-    res.status(500).send({ error: "Failed to add client" });
+
+    if (result.acknowledged && sendAutomationEmail) {
+
+      // ✅ Dynamic Frontend URL: Localhost or Vercel automatically
+      const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+      const loginUrl = `${frontendUrl}/login?email=${portalEmail}`;
+
+      // 💎 Premium Minimalist Email Template
+      const emailHtml = `
+        <div style="background-color: #f9fafb; padding: 50px 20px; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+          <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 24px; padding: 48px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);">
+            
+            <div style="text-align: left; margin-bottom: 32px;">
+               <div style="height: 40px; width: 40px; background-color: #4177BC; border-radius: 10px; display: inline-block; vertical-align: middle;"></div>
+               <span style="font-size: 20px; font-weight: 800; color: #111827; margin-left: 10px; letter-spacing: -0.5px;">Vault Ecosystem</span>
+            </div>
+
+            <h1 style="font-size: 28px; font-weight: 800; color: #111827; margin-bottom: 16px; letter-spacing: -0.025em;">Welcome to your workspace, ${name}.</h1>
+            
+            <p style="font-size: 16px; line-height: 24px; color: #4b5563; margin-bottom: 32px;">
+              Your project environment has been successfully configured. You can now access your dedicated dashboard to monitor progress, manage milestones, and view financial statements.
+            </p>
+
+            <div style="border-top: 1px solid #f3f4f6; border-bottom: 1px solid #f3f4f6; padding: 24px 0; margin-bottom: 32px;">
+              <div style="margin-bottom: 16px;">
+                <span style="font-size: 12px; font-weight: 700; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.05em; display: block; margin-bottom: 4px;">Access Email</span>
+                <span style="font-size: 16px; font-weight: 600; color: #111827;">${portalEmail}</span>
+              </div>
+              <div>
+                <span style="font-size: 12px; font-weight: 700; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.05em; display: block; margin-bottom: 4px;">Temporary Password</span>
+                <code style="font-family: monospace; font-size: 16px; font-weight: 600; color: #111827; background: #f3f4f6; padding: 2px 6px; border-radius: 4px;">${password}</code>
+              </div>
+            </div>
+
+            <div style="text-align: left; margin-bottom: 40px;">
+              <a href="${loginUrl}" style="background-color: #111827; color: #ffffff; padding: 16px 32px; border-radius: 12px; text-decoration: none; font-size: 16px; font-weight: 600; display: inline-block; transition: background-color 0.2s ease;">
+                Sign in to Dashboard &rarr;
+              </a>
+            </div>
+
+            <p style="font-size: 14px; color: #6b7280; line-height: 20px;">
+              For security, this password is temporary. You will be prompted to create a new one upon your first successful login.
+            </p>
+
+            <div style="margin-top: 48px; padding-top: 24px; border-top: 1px solid #f3f4f6;">
+              <p style="font-size: 12px; color: #9ca3af; line-height: 16px;">
+                © ${new Date().getFullYear()} Vault LedgerPRO. All rights reserved.<br>
+                This is an automated system message. Please do not reply directly.
+              </p>
+            </div>
+          </div>
+        </div>
+      `;
+
+      const mailOptions = {
+        from: `"Vault System" <${process.env.EMAIL_USER}>`,
+        to: email,
+        subject: `Workspace Ready: Access credentials for ${name}`,
+        html: emailHtml
+      };
+
+      await transporter.sendMail(mailOptions);
+      console.log("✅ Premium Welcome Email Sent to:", email);
+    }
+
+    res.status(201).send({ message: "✅ Client created and Email sent", result });
+  } catch (err) {
+    console.error("Error:", err);
+    res.status(500).send({ error: "Failed to create client or send email" });
   }
 });
 
@@ -643,6 +713,33 @@ app.get('/dashboard-stats', async (req, res) => {
   }
 });
 
+/** ⚙️ SETTINGS API (No /api prefix) **/
+app.get('/settings', async (req, res) => {
+  try {
+    const db = await connectDB();
+    const settings = await db.collection("settings").findOne({ id: "admin_config" });
+    res.json(settings || { adminName: "Admin User", businessName: "Your Brand" });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch settings" });
+  }
+});
+
+app.post('/settings', async (req, res) => {
+  try {
+    const db = await connectDB();
+    const data = req.body;
+    delete data._id;
+
+    await db.collection("settings").updateOne(
+      { id: "admin_config" },
+      { $set: { ...data, lastUpdated: new Date() } },
+      { upsert: true }
+    );
+    res.json({ success: true, message: "Settings Updated!" });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to save settings" });
+  }
+});
 // --- Server Startup ---
 app.listen(port, () => {
   console.log(`🚀 Server running on http://localhost:${port}`);
