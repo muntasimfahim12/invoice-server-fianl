@@ -103,7 +103,7 @@ app.post('/auth/login', async (req, res) => {
     const token = jwt.sign(
       { id: user._id, role: role, email: email },
       JWT_SECRET,
-      { expiresIn: '7d' } 
+      { expiresIn: '7d' }
     );
 
     // 5. Response পাঠানো
@@ -170,95 +170,85 @@ app.post('/clinets', async (req, res) => {
     const database = await connectDB();
     const collection = database.collection("clinets");
 
+    // ১. ডাটা ডিস্ট্রাকচার করা
     const {
-      name, email, portalEmail, password, projects,
+      name,
+      email,
+      portalEmail, // ফ্রন্টএন্ড থেকে আসা লগইন ইমেইল
+      password,
+      projects,
       sendAutomationEmail
     } = req.body;
 
+    // ২. লগইন ডাটা ক্লিন করা (যাতে লগইন এ সমস্যা না হয়)
+    // ইমেইল ছোট হাতের করা এবং পাসওয়ার্ড স্ট্রিং এ কনভার্ট করা খুব জরুরি
+    const finalLoginEmail = (portalEmail || email).trim().toLowerCase();
+    const finalPassword = password ? password.toString().trim() : "";
+
     const newClient = {
-      ...req.body,
+      ...req.body, // বাকি সব তথ্য (phone, location ইত্যাদি)
+      portalEmail: finalLoginEmail, // ডাটাবেজে এই ফিল্ডেই লগইন চেক হয়
+      password: finalPassword,       // প্লেইন টেক্সট পাসওয়ার্ড
       status: req.body.status || "Active",
       createdAt: new Date(),
       projects: (projects || []).map(p => ({
         _id: new ObjectId().toString(),
         name: p.name,
-        budget: p.budget,
-        description: p.description,
-        type: p.type,
+        budget: Number(p.budget) || 0,
+        description: p.description || "",
+        type: p.type || "full",
         status: p.status || "Active",
         milestones: p.milestones || []
       }))
     };
 
+    // ৩. ডাটাবেজে ইনসার্ট করা
     const result = await collection.insertOne(newClient);
 
+    // ৪. সিম্পল ইমেইল পাঠানো (বক্স ছাড়া শুধু টেক্সট এবং বাটন)
     if (result.acknowledged && sendAutomationEmail) {
-
-      // ✅ Dynamic Frontend URL: Localhost or Vercel automatically
       const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
-      const loginUrl = `${frontendUrl}/login?email=${portalEmail}`;
+      const loginUrl = `${frontendUrl}/login?email=${finalLoginEmail}`;
 
-      // 💎 Premium Minimalist Email Template
-      const emailHtml = `
-        <div style="background-color: #f9fafb; padding: 50px 20px; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
-          <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 24px; padding: 48px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);">
-            
-            <div style="text-align: left; margin-bottom: 32px;">
-               <div style="height: 40px; width: 40px; background-color: #4177BC; border-radius: 10px; display: inline-block; vertical-align: middle;"></div>
-               <span style="font-size: 20px; font-weight: 800; color: #111827; margin-left: 10px; letter-spacing: -0.5px;">Vault Ecosystem</span>
-            </div>
-
-            <h1 style="font-size: 28px; font-weight: 800; color: #111827; margin-bottom: 16px; letter-spacing: -0.025em;">Welcome to your workspace, ${name}.</h1>
-            
-            <p style="font-size: 16px; line-height: 24px; color: #4b5563; margin-bottom: 32px;">
-              Your project environment has been successfully configured. You can now access your dedicated dashboard to monitor progress, manage milestones, and view financial statements.
-            </p>
-
-            <div style="border-top: 1px solid #f3f4f6; border-bottom: 1px solid #f3f4f6; padding: 24px 0; margin-bottom: 32px;">
-              <div style="margin-bottom: 16px;">
-                <span style="font-size: 12px; font-weight: 700; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.05em; display: block; margin-bottom: 4px;">Access Email</span>
-                <span style="font-size: 16px; font-weight: 600; color: #111827;">${portalEmail}</span>
-              </div>
-              <div>
-                <span style="font-size: 12px; font-weight: 700; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.05em; display: block; margin-bottom: 4px;">Temporary Password</span>
-                <code style="font-family: monospace; font-size: 16px; font-weight: 600; color: #111827; background: #f3f4f6; padding: 2px 6px; border-radius: 4px;">${password}</code>
-              </div>
-            </div>
-
-            <div style="text-align: left; margin-bottom: 40px;">
-              <a href="${loginUrl}" style="background-color: #111827; color: #ffffff; padding: 16px 32px; border-radius: 12px; text-decoration: none; font-size: 16px; font-weight: 600; display: inline-block; transition: background-color 0.2s ease;">
-                Sign in to Dashboard &rarr;
-              </a>
-            </div>
-
-            <p style="font-size: 14px; color: #6b7280; line-height: 20px;">
-              For security, this password is temporary. You will be prompted to create a new one upon your first successful login.
-            </p>
-
-            <div style="margin-top: 48px; padding-top: 24px; border-top: 1px solid #f3f4f6;">
-              <p style="font-size: 12px; color: #9ca3af; line-height: 16px;">
-                © ${new Date().getFullYear()} Vault LedgerPRO. All rights reserved.<br>
-                This is an automated system message. Please do not reply directly.
-              </p>
-            </div>
-          </div>
+      // একদম সিম্পল টেক্সট বেজড টেমপ্লেট
+      const simpleEmailHtml = `
+        <div style="font-family: sans-serif; color: #333; line-height: 1.6; max-width: 600px;">
+          <p>Hello ${name},</p>
+          
+          <p>Your project workspace is ready. You can now log in to your dashboard using the credentials below:</p>
+          
+          <p>
+            <strong>Email:</strong> ${finalLoginEmail}<br>
+            <strong>Password:</strong> ${finalPassword}
+          </p>
+          
+          <p style="margin-top: 30px;">
+            <a href="${loginUrl}" style="background-color: #4177BC; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;">
+              Login to Dashboard
+            </a>
+          </p>
+          
+          <p style="margin-top: 30px; font-size: 14px; color: #777;">
+            Best Regards,<br>
+            Vault LedgerPRO Team
+          </p>
         </div>
       `;
 
       const mailOptions = {
         from: `"Vault System" <${process.env.EMAIL_USER}>`,
-        to: email,
-        subject: `Workspace Ready: Access credentials for ${name}`,
-        html: emailHtml
+        to: email, // ক্লায়েন্টের মেইন ইমেইলে পাঠাবে
+        subject: `Login Credentials for ${name}`,
+        html: simpleEmailHtml
       };
 
       await transporter.sendMail(mailOptions);
-      console.log("✅ Premium Welcome Email Sent to:", email);
+      console.log("✅ Simple Welcome Email Sent to:", email);
     }
 
-    res.status(201).send({ message: "✅ Client created and Email sent", result });
+    res.status(201).send({ message: "✅ Client created successfully", result });
   } catch (err) {
-    console.error("Error:", err);
+    console.error("❌ Error creating client:", err);
     res.status(500).send({ error: "Failed to create client or send email" });
   }
 });
