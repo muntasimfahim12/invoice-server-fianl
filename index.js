@@ -66,59 +66,72 @@ app.post('/auth/login', async (req, res) => {
     const { email, password, role } = req.body;
     const database = await connectDB();
 
+    // ১. ইনপুট ডাটা ক্লিন করা (খুবই গুরুত্বপূর্ণ)
+    // ইমেইলকে ছোট হাতের অক্ষর এবং পাসওয়ার্ডকে স্ট্রিং-এ কনভার্ট করা
+    const cleanEmail = email ? email.trim().toLowerCase() : "";
+    const inputPassword = password ? password.toString().trim() : "";
+
     let user = null;
-    let collectionName = "";
 
-    console.log(`--- Login Attempt: ${role} ---`);
+    console.log(`--- Login Attempt: ${role} | Email: ${cleanEmail} ---`);
 
-    // 1. Role অনুযায়ী সঠিক Collection সিলেক্ট করা
+    // ২. Role অনুযায়ী ইউজার খোঁজা
     if (role === "admin") {
-      user = await database.collection("users").findOne({ email: email.trim() });
-      collectionName = "users";
+      // অ্যাডমিনের ক্ষেত্রে 'email' ফিল্ড চেক
+      user = await database.collection("users").findOne({ email: cleanEmail });
     } else {
-      // ক্লায়েন্টের ক্ষেত্রে আমরা 'portalEmail' দিয়ে চেক করবো
-      user = await database.collection("clinets").findOne({ portalEmail: email.trim() });
-      collectionName = "clinets";
+      // ক্লায়েন্টের ক্ষেত্রে 'portalEmail' ফিল্ড চেক
+      user = await database.collection("clinets").findOne({ portalEmail: cleanEmail });
     }
 
-    // 2. ইউজার না পাওয়া গেলে
+    // ৩. ইউজার ডাটাবেজে না থাকলে
     if (!user) {
-      return res.status(404).json({ error: "User not found with this email!" });
+      return res.status(404).json({
+        error: "এই ইমেইল দিয়ে কোনো অ্যাকাউন্ট পাওয়া যায়নি!"
+      });
     }
 
-    // 3. পাসওয়ার্ড চেক 
-    // অ্যাডমিনের পাসওয়ার্ড Bcrypt দিয়ে হ্যাশ করা, কিন্তু ক্লায়েন্টের পাসওয়ার্ড এখন প্লেইন টেক্সট
+    // ৪. পাসওয়ার্ড ম্যাচিং লজিক
     let isMatch = false;
+
     if (role === "admin") {
-      isMatch = await bcrypt.compare(password, user.password);
+      // অ্যাডমিন পাসওয়ার্ড চেক (Bcrypt)
+      isMatch = await bcrypt.compare(inputPassword, user.password);
     } else {
-      isMatch = (password === user.password); // সরাসরি চেক (যেহেতু অ্যাডমিন প্যানেল থেকে তৈরি)
+      // ক্লায়েন্ট পাসওয়ার্ড চেক (Plain Text + String Conversion)
+      // ডাটাবেজের পাসওয়ার্ড নাম্বার হলেও তাকে স্ট্রিং করে ম্যাচ করা হচ্ছে
+      const storedPassword = user.password ? user.password.toString().trim() : "";
+      isMatch = (inputPassword === storedPassword);
     }
 
+    // ৫. পাসওয়ার্ড না মিললে
     if (!isMatch) {
-      return res.status(401).json({ error: "Incorrect password! Please try again." });
+      console.log(`❌ Password Mismatch for: ${cleanEmail}`);
+      return res.status(401).json({
+        error: "পাসওয়ার্ডটি ভুল হয়েছে! আবার চেষ্টা করুন।"
+      });
     }
 
-    // 4. Token Generate
+    // ৬. JWT টোকেন জেনারেট করা
     const token = jwt.sign(
-      { id: user._id, role: role, email: email },
+      { id: user._id, role: role, email: cleanEmail },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
 
-    // 5. Response পাঠানো
+    // ৭. সফল রেসপন্স পাঠানো
     res.status(200).json({
       token,
       role: role,
-      name: user.name || user.companyName,
+      name: user.name || user.companyName || "User",
       email: role === "admin" ? user.email : user.portalEmail
     });
 
-    console.log(`✅ ${role} Login Success:`, email);
+    console.log(`✅ ${role} Login Success:`, cleanEmail);
 
   } catch (err) {
-    console.error("Login Error:", err);
-    res.status(500).json({ error: "Internal Server Error" });
+    console.error("Login Error Detail:", err);
+    res.status(500).json({ error: "সার্ভারে সমস্যা হয়েছে। দয়া করে কিছুক্ষণ পর চেষ্টা করুন।" });
   }
 });
 
