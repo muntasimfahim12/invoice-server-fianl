@@ -64,61 +64,61 @@ app.get('/', (req, res) => {
 app.post('/auth/login', async (req, res) => {
   try {
     const { email, password, role } = req.body;
-
-    // 1. Debugging: Terminal-e dekhun ki ashche
-    console.log("--- Login Attempt ---");
-    console.log("Email from Frontend:", email);
-    console.log("Role from Frontend:", role);
-
     const database = await connectDB();
-    const userCollection = database.collection("users");
 
-    // 2. User khuje ber kora (Trim email)
-    const user = await userCollection.findOne({ email: email.trim() });
+    let user = null;
+    let collectionName = "";
 
+    console.log(`--- Login Attempt: ${role} ---`);
+
+    // 1. Role অনুযায়ী সঠিক Collection সিলেক্ট করা
+    if (role === "admin") {
+      user = await database.collection("users").findOne({ email: email.trim() });
+      collectionName = "users";
+    } else {
+      // ক্লায়েন্টের ক্ষেত্রে আমরা 'portalEmail' দিয়ে চেক করবো
+      user = await database.collection("clinets").findOne({ portalEmail: email.trim() });
+      collectionName = "clinets";
+    }
+
+    // 2. ইউজার না পাওয়া গেলে
     if (!user) {
-      console.log("❌ User Not Found in DB");
-      return res.status(404).json({ error: "User not found!" });
+      return res.status(404).json({ error: "User not found with this email!" });
     }
 
-    console.log("✅ User Found in DB:", user.email);
-
-    // 3. Role check
-    if (role && user.role !== role) {
-      console.log("❌ Role Mismatch! DB Role:", user.role, "Frontend Role:", role);
-      return res.status(403).json({ error: "Unauthorized role access!" });
+    // 3. পাসওয়ার্ড চেক 
+    // অ্যাডমিনের পাসওয়ার্ড Bcrypt দিয়ে হ্যাশ করা, কিন্তু ক্লায়েন্টের পাসওয়ার্ড এখন প্লেইন টেক্সট
+    let isMatch = false;
+    if (role === "admin") {
+      isMatch = await bcrypt.compare(password, user.password);
+    } else {
+      isMatch = (password === user.password); // সরাসরি চেক (যেহেতু অ্যাডমিন প্যানেল থেকে তৈরি)
     }
-
-    // 4. Password Check (Directly checking with bcryptjs)
-    const isMatch = await bcrypt.compare(password, user.password);
-    console.log("Password Match Status:", isMatch);
 
     if (!isMatch) {
-      // Emergency Hack: Jodi konobhabe hash na mile, tahole direct check (shudhu testing er jonno)
-      if (password === "admin786") {
-        console.log("⚠️ Bcrypt failed but plain text matched! Logging in...");
-      } else {
-        return res.status(401).json({ error: "Wrong password! Please try again." });
-      }
+      return res.status(401).json({ error: "Incorrect password! Please try again." });
     }
 
-    // 5. Success - Token Generate
+    // 4. Token Generate
     const token = jwt.sign(
-      { id: user._id, role: user.role },
+      { id: user._id, role: role, email: email },
       JWT_SECRET,
-      { expiresIn: '1d' }
+      { expiresIn: '7d' } 
     );
 
+    // 5. Response পাঠানো
     res.status(200).json({
       token,
-      role: user.role,
-      name: user.name,
-      email: user.email
+      role: role,
+      name: user.name || user.companyName,
+      email: role === "admin" ? user.email : user.portalEmail
     });
 
+    console.log(`✅ ${role} Login Success:`, email);
+
   } catch (err) {
-    console.error("Server Error:", err);
-    res.status(500).json({ error: "Server error" });
+    console.error("Login Error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
