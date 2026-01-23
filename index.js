@@ -66,8 +66,7 @@ app.post('/auth/login', async (req, res) => {
     const { email, password, role } = req.body;
     const database = await connectDB();
 
-    // ১. ইনপুট ডাটা ক্লিন করা (খুবই গুরুত্বপূর্ণ)
-    // ইমেইলকে ছোট হাতের অক্ষর এবং পাসওয়ার্ডকে স্ট্রিং-এ কনভার্ট করা
+   
     const cleanEmail = email ? email.trim().toLowerCase() : "";
     const inputPassword = password ? password.toString().trim() : "";
 
@@ -75,36 +74,32 @@ app.post('/auth/login', async (req, res) => {
 
     console.log(`--- Login Attempt: ${role} | Email: ${cleanEmail} ---`);
 
-    // ২. Role অনুযায়ী ইউজার খোঁজা
     if (role === "admin") {
-      // অ্যাডমিনের ক্ষেত্রে 'email' ফিল্ড চেক
+     
       user = await database.collection("users").findOne({ email: cleanEmail });
     } else {
-      // ক্লায়েন্টের ক্ষেত্রে 'portalEmail' ফিল্ড চেক
+    
       user = await database.collection("clinets").findOne({ portalEmail: cleanEmail });
     }
 
-    // ৩. ইউজার ডাটাবেজে না থাকলে
+   
     if (!user) {
       return res.status(404).json({
         error: "এই ইমেইল দিয়ে কোনো অ্যাকাউন্ট পাওয়া যায়নি!"
       });
     }
 
-    // ৪. পাসওয়ার্ড ম্যাচিং লজিক
+   
     let isMatch = false;
 
     if (role === "admin") {
-      // অ্যাডমিন পাসওয়ার্ড চেক (Bcrypt)
       isMatch = await bcrypt.compare(inputPassword, user.password);
     } else {
-      // ক্লায়েন্ট পাসওয়ার্ড চেক (Plain Text + String Conversion)
-      // ডাটাবেজের পাসওয়ার্ড নাম্বার হলেও তাকে স্ট্রিং করে ম্যাচ করা হচ্ছে
+     
       const storedPassword = user.password ? user.password.toString().trim() : "";
       isMatch = (inputPassword === storedPassword);
     }
 
-    // ৫. পাসওয়ার্ড না মিললে
     if (!isMatch) {
       console.log(`❌ Password Mismatch for: ${cleanEmail}`);
       return res.status(401).json({
@@ -112,14 +107,14 @@ app.post('/auth/login', async (req, res) => {
       });
     }
 
-    // ৬. JWT টোকেন জেনারেট করা
+  
     const token = jwt.sign(
       { id: user._id, role: role, email: cleanEmail },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
 
-    // ৭. সফল রেসপন্স পাঠানো
+   
     res.status(200).json({
       token,
       role: role,
@@ -183,25 +178,22 @@ app.post('/clinets', async (req, res) => {
     const database = await connectDB();
     const collection = database.collection("clinets");
 
-    // ১. ডাটা ডিস্ট্রাকচার করা
     const {
       name,
       email,
-      portalEmail, // ফ্রন্টএন্ড থেকে আসা লগইন ইমেইল
+      portalEmail, 
       password,
       projects,
       sendAutomationEmail
     } = req.body;
 
-    // ২. লগইন ডাটা ক্লিন করা (যাতে লগইন এ সমস্যা না হয়)
-    // ইমেইল ছোট হাতের করা এবং পাসওয়ার্ড স্ট্রিং এ কনভার্ট করা খুব জরুরি
     const finalLoginEmail = (portalEmail || email).trim().toLowerCase();
     const finalPassword = password ? password.toString().trim() : "";
 
     const newClient = {
-      ...req.body, // বাকি সব তথ্য (phone, location ইত্যাদি)
-      portalEmail: finalLoginEmail, // ডাটাবেজে এই ফিল্ডেই লগইন চেক হয়
-      password: finalPassword,       // প্লেইন টেক্সট পাসওয়ার্ড
+      ...req.body,
+      portalEmail: finalLoginEmail, 
+      password: finalPassword,
       status: req.body.status || "Active",
       createdAt: new Date(),
       projects: (projects || []).map(p => ({
@@ -215,15 +207,12 @@ app.post('/clinets', async (req, res) => {
       }))
     };
 
-    // ৩. ডাটাবেজে ইনসার্ট করা
     const result = await collection.insertOne(newClient);
 
-    // ৪. সিম্পল ইমেইল পাঠানো (বক্স ছাড়া শুধু টেক্সট এবং বাটন)
     if (result.acknowledged && sendAutomationEmail) {
       const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
       const loginUrl = `${frontendUrl}/login?email=${finalLoginEmail}`;
 
-      // একদম সিম্পল টেক্সট বেজড টেমপ্লেট
       const simpleEmailHtml = `
         <div style="font-family: sans-serif; color: #333; line-height: 1.6; max-width: 600px;">
           <p>Hello ${name},</p>
@@ -250,7 +239,7 @@ app.post('/clinets', async (req, res) => {
 
       const mailOptions = {
         from: `"Vault System" <${process.env.EMAIL_USER}>`,
-        to: email, // ক্লায়েন্টের মেইন ইমেইলে পাঠাবে
+        to: email, 
         subject: `Login Credentials for ${name}`,
         html: simpleEmailHtml
       };
