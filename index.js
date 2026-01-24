@@ -66,55 +66,58 @@ app.post('/auth/login', async (req, res) => {
     const { email, password, role } = req.body;
     const database = await connectDB();
 
-   
+    // Clean input
     const cleanEmail = email ? email.trim().toLowerCase() : "";
     const inputPassword = password ? password.toString().trim() : "";
 
     let user = null;
 
-    console.log(`--- Login Attempt: ${role} | Email: ${cleanEmail} ---`);
+    console.log(`--- Login Attempt | Role: ${role} | Email: ${cleanEmail} ---`);
 
+    // Find user based on role
     if (role === "admin") {
-     
       user = await database.collection("users").findOne({ email: cleanEmail });
     } else {
-    
-      user = await database.collection("clinets").findOne({ portalEmail: cleanEmail });
+      user = await database
+        .collection("clinets")
+        .findOne({ portalEmail: cleanEmail });
     }
 
-   
+    // User not found
     if (!user) {
       return res.status(404).json({
-        error: "এই ইমেইল দিয়ে কোনো অ্যাকাউন্ট পাওয়া যায়নি!"
+        error: "No account found with this email address."
       });
     }
 
-   
+    // Password validation
     let isMatch = false;
 
     if (role === "admin") {
       isMatch = await bcrypt.compare(inputPassword, user.password);
     } else {
-     
-      const storedPassword = user.password ? user.password.toString().trim() : "";
-      isMatch = (inputPassword === storedPassword);
+      const storedPassword = user.password
+        ? user.password.toString().trim()
+        : "";
+      isMatch = inputPassword === storedPassword;
     }
 
+    // Password mismatch
     if (!isMatch) {
-      console.log(`❌ Password Mismatch for: ${cleanEmail}`);
+      console.log(`❌ Password mismatch for: ${cleanEmail}`);
       return res.status(401).json({
-        error: "পাসওয়ার্ডটি ভুল হয়েছে! আবার চেষ্টা করুন।"
+        error: "Incorrect password. Please try again."
       });
     }
 
-  
+    // Generate JWT
     const token = jwt.sign(
       { id: user._id, role: role, email: cleanEmail },
       JWT_SECRET,
-      { expiresIn: '7d' }
+      { expiresIn: "7d" }
     );
 
-   
+    // Success response
     res.status(200).json({
       token,
       role: role,
@@ -122,13 +125,16 @@ app.post('/auth/login', async (req, res) => {
       email: role === "admin" ? user.email : user.portalEmail
     });
 
-    console.log(`✅ ${role} Login Success:`, cleanEmail);
+    console.log(`✅ Login successful | Role: ${role} | Email: ${cleanEmail}`);
 
   } catch (err) {
-    console.error("Login Error Detail:", err);
-    res.status(500).json({ error: "সার্ভারে সমস্যা হয়েছে। দয়া করে কিছুক্ষণ পর চেষ্টা করুন।" });
+    console.error("❌ Login Error:", err);
+    res.status(500).json({
+      error: "Something went wrong on the server. Please try again later."
+    });
   }
 });
+
 
 
 /** 1️⃣ GET ALL CLIENTS **/
@@ -181,7 +187,7 @@ app.post('/clinets', async (req, res) => {
     const {
       name,
       email,
-      portalEmail, 
+      portalEmail,
       password,
       projects,
       sendAutomationEmail
@@ -192,7 +198,7 @@ app.post('/clinets', async (req, res) => {
 
     const newClient = {
       ...req.body,
-      portalEmail: finalLoginEmail, 
+      portalEmail: finalLoginEmail,
       password: finalPassword,
       status: req.body.status || "Active",
       createdAt: new Date(),
@@ -239,7 +245,7 @@ app.post('/clinets', async (req, res) => {
 
       const mailOptions = {
         from: `"Vault System" <${process.env.EMAIL_USER}>`,
-        to: email, 
+        to: email,
         subject: `Login Credentials for ${name}`,
         html: simpleEmailHtml
       };
