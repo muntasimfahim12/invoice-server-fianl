@@ -24,7 +24,7 @@ app.use(express.json());
 
 // --- Routes Implementation ---
 app.use('/auth', authRoutes);
-app.use('/users', userRoutes); // প্রোফাইল এপিআই এর জন্য
+app.use('/users', userRoutes); 
 app.use('/clinets', clientRoutes);
 app.use('/invoices', invoiceRoutes);
 app.use('/', generalRoutes);

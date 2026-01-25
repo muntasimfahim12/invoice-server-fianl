@@ -4,12 +4,11 @@ const { ObjectId } = require('mongodb');
 const PDFDocument = require('pdfkit');
 const { connectDB, transporter } = require('../config/db');
 
-/** 1️⃣ GET INVOICES (Admin vs Client Logic) **/
+/** 1️⃣ GET INVOICES (Admin vs Client Logic - Fully Intact) **/
 router.get('/', async (req, res) => {
     try {
         const { search, status, email, role } = req.query;
 
-        // ফ্রন্টএন্ড থেকে ইমেইল না আসলে ৪MD এরর হ্যান্ডলিং
         if (!email) {
             return res.status(400).send({ error: "Authentication email is required to fetch data" });
         }
@@ -18,7 +17,7 @@ router.get('/', async (req, res) => {
         const collection = database.collection("invoices");
 
         // Admin Sees all created by them, Client sees only assigned to them
-        let query = role === 'admin' ? { adminEmail: email } : { clientEmail: email.toLowerCase() };
+        let query = role === 'admin' ? { adminEmail: email.toLowerCase() } : { clientEmail: email.toLowerCase() };
 
         if (search) {
             query.$or = [
@@ -31,64 +30,73 @@ router.get('/', async (req, res) => {
         if (status && status !== 'All') query.status = status;
 
         const invoices = await collection.find(query).sort({ createdAt: -1 }).toArray();
-        res.send(invoices);
+        res.status(200).send(invoices);
     } catch (err) {
         res.status(500).send({ error: "Failed to fetch invoices" });
     }
 });
 
-/** 2️⃣ CREATE INVOICE (Updates Two Collections) **/
+/** 2️⃣ CREATE INVOICE (Updates Main, Admin & Client Collections) **/
 router.post('/', async (req, res) => {
     try {
         const database = await connectDB();
         const invoiceCollection = database.collection("invoices");
         const usersCollection = database.collection("users");
 
+        const { adminEmail, clientEmail, ...rest } = req.body;
+
+        if (!adminEmail || !clientEmail) {
+            return res.status(400).send({ error: "Admin and Client emails are required" });
+        }
+
         const invoiceData = {
-            ...req.body,
-            clientEmail: req.body.clientEmail.toLowerCase(),
+            ...rest,
+            adminEmail: adminEmail.toLowerCase(),
+            clientEmail: clientEmail.toLowerCase(),
             createdAt: new Date(),
             updatedAt: new Date(),
             status: req.body.status || "Unpaid"
         };
 
-        // ১. 'invoices' কালেকশনে ইনভয়েস সেভ করা
+        // ১. 'invoices' কালেকশনে মেইন ডাটা সেভ
         const result = await invoiceCollection.insertOne(invoiceData);
         const savedInvoiceId = result.insertedId;
 
-        // ২. 'users' কালেকশনে ইনভয়েস রেফারেন্স পুশ করা
-        if (invoiceData.clientEmail) {
-            await usersCollection.updateOne(
-                { email: invoiceData.clientEmail },
-                {
-                    $push: {
-                        invoices: {
-                            _id: savedInvoiceId,
-                            invoiceId: invoiceData.invoiceId,
-                            projectTitle: invoiceData.projectTitle,
-                            grandTotal: invoiceData.grandTotal,
-                            status: invoiceData.status,
-                            date: new Date()
-                        }
-                    }
-                }
-            );
-        }
+        const summaryData = {
+            _id: savedInvoiceId,
+            invoiceId: invoiceData.invoiceId,
+            projectTitle: invoiceData.projectTitle,
+            clientName: invoiceData.clientName,
+            grandTotal: invoiceData.grandTotal,
+            status: invoiceData.status,
+            date: invoiceData.createdAt
+        };
 
-        res.status(201).send({ message: "✅ Invoice created & linked to user", result });
+        // ২. Admin-এর প্রোফাইলে (myCreatedInvoices) রেফারেন্স সেভ
+        await usersCollection.updateOne(
+            { email: invoiceData.adminEmail },
+            { $push: { myCreatedInvoices: summaryData } }
+        );
+
+        // ৩. Client-এর প্রোফাইলে (invoicesReceived) রেফারেন্স সেভ
+        await usersCollection.updateOne(
+            { email: invoiceData.clientEmail },
+            { $push: { invoicesReceived: summaryData } }
+        );
+
+        res.status(201).send({ message: "✅ Invoice created & synced globally", id: savedInvoiceId });
     } catch (err) {
         console.error("❌ Create Error:", err);
         res.status(500).send({ error: "Failed to create invoice" });
     }
 });
 
-/** 3️⃣ GET SINGLE INVOICE (By MongoDB _id) **/
+/** 3️⃣ GET SINGLE INVOICE **/
 router.get('/:id', async (req, res) => {
     try {
         const database = await connectDB();
         const collection = database.collection("invoices");
 
-        // ID valid কি না চেক করা
         if (!ObjectId.isValid(req.params.id)) {
             return res.status(400).send({ error: "Invalid Object ID" });
         }
@@ -102,7 +110,7 @@ router.get('/:id', async (req, res) => {
     }
 });
 
-/** 4️⃣ SEND PROFESSIONAL EMAIL **/
+/** 4️⃣ SEND PROFESSIONAL EMAIL (HTML Design Kept Exact) **/
 router.post('/send-email', async (req, res) => {
     try {
         const inv = req.body;
@@ -154,7 +162,7 @@ router.post('/send-email', async (req, res) => {
     }
 });
 
-/** 5️⃣ DOWNLOAD PDF (Improved with Table) **/
+/** 5️⃣ DOWNLOAD PDF (With Improved Table Layout) **/
 router.get('/:id/download', async (req, res) => {
     try {
         const database = await connectDB();
@@ -169,25 +177,21 @@ router.get('/:id/download', async (req, res) => {
         res.setHeader('Content-Disposition', `attachment; filename=Invoice-${inv.invoiceId}.pdf`);
         doc.pipe(res);
 
-        // Header Style
         doc.rect(0, 0, 600, 120).fill('#4177BC');
         doc.fillColor('#FFFFFF').fontSize(25).text('INVOICE', 50, 45);
         doc.fontSize(10).text(`Invoice Number: ${inv.invoiceId}`, 50, 80);
         doc.text(`Date: ${new Date(inv.createdAt).toLocaleDateString()}`, 50, 95);
 
-        // Client Info
         doc.fillColor('#333').fontSize(12).text('BILL TO:', 50, 150);
         doc.font('Helvetica-Bold').fontSize(11).text(inv.clientName || 'N/A', 50, 170);
         doc.font('Helvetica').text(inv.clientEmail, 50, 185);
 
-        // Simple Table Header
         doc.rect(50, 220, 500, 20).fill('#f1f5f9');
         doc.fillColor('#475569').fontSize(10).text('Item Description', 60, 225);
         doc.text('Qty', 350, 225);
         doc.text('Price', 420, 225);
         doc.text('Total', 500, 225);
 
-        // Items logic (loop)
         let y = 250;
         (inv.items || []).forEach(item => {
             doc.fillColor('#333').text(item.name, 60, y);
@@ -197,18 +201,16 @@ router.get('/:id/download', async (req, res) => {
             y += 20;
         });
 
-        // Grand Total
         doc.rect(350, y + 20, 200, 30).fill('#4177BC');
         doc.fillColor('#FFF').font('Helvetica-Bold').text(`GRAND TOTAL: ${inv.currency} ${inv.grandTotal.toLocaleString()}`, 360, y + 30);
 
         doc.end();
     } catch (err) {
-        console.error(err);
         res.status(500).send({ error: "PDF Generation failed" });
     }
 });
 
-/** 6️⃣ PATCH (Update both collections) **/
+/** 6️⃣ PATCH (Sync Updates Across All Records) **/
 router.patch('/:id', async (req, res) => {
     try {
         const database = await connectDB();
@@ -216,28 +218,29 @@ router.patch('/:id', async (req, res) => {
         const userColl = database.collection("users");
         const query = ObjectId.isValid(req.params.id) ? { _id: new ObjectId(req.params.id) } : { invoiceId: req.params.id };
 
-        // ১. ইনভয়েস আপডেট
         const updateDoc = { $set: { ...req.body, updatedAt: new Date() } };
         await invColl.updateOne(query, updateDoc);
 
         const updatedInv = await invColl.findOne(query);
         if (updatedInv) {
+            const syncId = updatedInv._id;
+            // Admin list sync
             await userColl.updateOne(
-                { "invoices._id": updatedInv._id },
-                {
-                    $set: {
-                        "invoices.$.status": updatedInv.status,
-                        "invoices.$.grandTotal": updatedInv.grandTotal
-                    }
-                }
+                { email: updatedInv.adminEmail, "myCreatedInvoices._id": syncId },
+                { $set: { "myCreatedInvoices.$.status": updatedInv.status, "myCreatedInvoices.$.grandTotal": updatedInv.grandTotal } }
+            );
+            // Client list sync
+            await userColl.updateOne(
+                { email: updatedInv.clientEmail, "invoicesReceived._id": syncId },
+                { $set: { "invoicesReceived.$.status": updatedInv.status, "invoicesReceived.$.grandTotal": updatedInv.grandTotal } }
             );
         }
 
-        res.send({ message: "✅ Updated successfully" });
-    } catch { res.status(500).send({ error: "Update failed" }); }
+        res.send({ message: "✅ Global update successful" });
+    } catch (err) { res.status(500).send({ error: "Update failed" }); }
 });
 
-/** 7️⃣ DELETE (Remove from both collections) **/
+/** 7️⃣ DELETE (Global Cleanup) **/
 router.delete('/:id', async (req, res) => {
     try {
         const database = await connectDB();
@@ -248,17 +251,17 @@ router.delete('/:id', async (req, res) => {
         const invoiceToDelete = await invColl.findOne(query);
 
         if (invoiceToDelete) {
-
-            await userColl.updateOne(
-                { email: invoiceToDelete.clientEmail },
-                { $pull: { invoices: { _id: invoiceToDelete._id } } }
-            );
-
-            await invColl.deleteOne({ _id: invoiceToDelete._id });
+            const delId = invoiceToDelete._id;
+            // Pull from Admin
+            await userColl.updateOne({ email: invoiceToDelete.adminEmail }, { $pull: { myCreatedInvoices: { _id: delId } } });
+            // Pull from Client
+            await userColl.updateOne({ email: invoiceToDelete.clientEmail }, { $pull: { invoicesReceived: { _id: delId } } });
+            // Delete Main
+            await invColl.deleteOne({ _id: delId });
         }
 
         res.send({ message: "🗑️ Deleted from all records" });
-    } catch { res.status(500).send({ error: "Delete failed" }); }
+    } catch (err) { res.status(500).send({ error: "Delete failed" }); }
 });
 
 module.exports = router;
