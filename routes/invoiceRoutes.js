@@ -8,12 +8,16 @@ const { connectDB, transporter } = require('../config/db');
 router.get('/', async (req, res) => {
     try {
         const { search, status, email, role } = req.query;
-        if (!email) return res.status(400).send({ error: "Email is required" });
+
+        // ফ্রন্টএন্ড থেকে ইমেইল না আসলে ৪MD এরর হ্যান্ডলিং
+        if (!email) {
+            return res.status(400).send({ error: "Authentication email is required to fetch data" });
+        }
 
         const database = await connectDB();
         const collection = database.collection("invoices");
 
-        // Admin sees all created by them, Client sees only assigned to them
+        // Admin Sees all created by them, Client sees only assigned to them
         let query = role === 'admin' ? { adminEmail: email } : { clientEmail: email.toLowerCase() };
 
         if (search) {
@@ -40,12 +44,12 @@ router.post('/', async (req, res) => {
         const invoiceCollection = database.collection("invoices");
         const usersCollection = database.collection("users");
 
-        const invoiceData = { 
-            ...req.body, 
-            clientEmail: req.body.clientEmail.toLowerCase(), 
-            createdAt: new Date(), 
+        const invoiceData = {
+            ...req.body,
+            clientEmail: req.body.clientEmail.toLowerCase(),
+            createdAt: new Date(),
             updatedAt: new Date(),
-            status: req.body.status || "Unpaid" 
+            status: req.body.status || "Unpaid"
         };
 
         // ১. 'invoices' কালেকশনে ইনভয়েস সেভ করা
@@ -56,17 +60,17 @@ router.post('/', async (req, res) => {
         if (invoiceData.clientEmail) {
             await usersCollection.updateOne(
                 { email: invoiceData.clientEmail },
-                { 
-                    $push: { 
+                {
+                    $push: {
                         invoices: {
-                            _id: savedInvoiceId, 
+                            _id: savedInvoiceId,
                             invoiceId: invoiceData.invoiceId,
                             projectTitle: invoiceData.projectTitle,
                             grandTotal: invoiceData.grandTotal,
                             status: invoiceData.status,
                             date: new Date()
-                        } 
-                    } 
+                        }
+                    }
                 }
             );
         }
@@ -83,7 +87,7 @@ router.get('/:id', async (req, res) => {
     try {
         const database = await connectDB();
         const collection = database.collection("invoices");
-        
+
         // ID valid কি না চেক করা
         if (!ObjectId.isValid(req.params.id)) {
             return res.status(400).send({ error: "Invalid Object ID" });
@@ -150,7 +154,7 @@ router.post('/send-email', async (req, res) => {
     }
 });
 
-/** 5️⃣ DOWNLOAD PDF **/
+/** 5️⃣ DOWNLOAD PDF (Improved with Table) **/
 router.get('/:id/download', async (req, res) => {
     try {
         const database = await connectDB();
@@ -165,16 +169,41 @@ router.get('/:id/download', async (req, res) => {
         res.setHeader('Content-Disposition', `attachment; filename=Invoice-${inv.invoiceId}.pdf`);
         doc.pipe(res);
 
+        // Header Style
         doc.rect(0, 0, 600, 120).fill('#4177BC');
         doc.fillColor('#FFFFFF').fontSize(25).text('INVOICE', 50, 45);
-        doc.fontSize(10).text(`ID: ${inv.invoiceId}`, 50, 80);
+        doc.fontSize(10).text(`Invoice Number: ${inv.invoiceId}`, 50, 80);
+        doc.text(`Date: ${new Date(inv.createdAt).toLocaleDateString()}`, 50, 95);
 
+        // Client Info
         doc.fillColor('#333').fontSize(12).text('BILL TO:', 50, 150);
-        doc.font('Helvetica').fontSize(11).text(inv.clientName, 50, 170);
-        doc.text(inv.clientEmail, 50, 185);
+        doc.font('Helvetica-Bold').fontSize(11).text(inv.clientName || 'N/A', 50, 170);
+        doc.font('Helvetica').text(inv.clientEmail, 50, 185);
+
+        // Simple Table Header
+        doc.rect(50, 220, 500, 20).fill('#f1f5f9');
+        doc.fillColor('#475569').fontSize(10).text('Item Description', 60, 225);
+        doc.text('Qty', 350, 225);
+        doc.text('Price', 420, 225);
+        doc.text('Total', 500, 225);
+
+        // Items logic (loop)
+        let y = 250;
+        (inv.items || []).forEach(item => {
+            doc.fillColor('#333').text(item.name, 60, y);
+            doc.text(item.qty.toString(), 350, y);
+            doc.text(item.price.toLocaleString(), 420, y);
+            doc.text((item.qty * item.price).toLocaleString(), 500, y);
+            y += 20;
+        });
+
+        // Grand Total
+        doc.rect(350, y + 20, 200, 30).fill('#4177BC');
+        doc.fillColor('#FFF').font('Helvetica-Bold').text(`GRAND TOTAL: ${inv.currency} ${inv.grandTotal.toLocaleString()}`, 360, y + 30);
 
         doc.end();
     } catch (err) {
+        console.error(err);
         res.status(500).send({ error: "PDF Generation failed" });
     }
 });
@@ -186,7 +215,7 @@ router.patch('/:id', async (req, res) => {
         const invColl = database.collection("invoices");
         const userColl = database.collection("users");
         const query = ObjectId.isValid(req.params.id) ? { _id: new ObjectId(req.params.id) } : { invoiceId: req.params.id };
-        
+
         // ১. ইনভয়েস আপডেট
         const updateDoc = { $set: { ...req.body, updatedAt: new Date() } };
         await invColl.updateOne(query, updateDoc);
@@ -195,11 +224,11 @@ router.patch('/:id', async (req, res) => {
         if (updatedInv) {
             await userColl.updateOne(
                 { "invoices._id": updatedInv._id },
-                { 
-                    $set: { 
+                {
+                    $set: {
                         "invoices.$.status": updatedInv.status,
-                        "invoices.$.grandTotal": updatedInv.grandTotal 
-                    } 
+                        "invoices.$.grandTotal": updatedInv.grandTotal
+                    }
                 }
             );
         }
@@ -215,19 +244,19 @@ router.delete('/:id', async (req, res) => {
         const invColl = database.collection("invoices");
         const userColl = database.collection("users");
         const query = ObjectId.isValid(req.params.id) ? { _id: new ObjectId(req.params.id) } : { invoiceId: req.params.id };
-        
+
         const invoiceToDelete = await invColl.findOne(query);
 
         if (invoiceToDelete) {
-            
+
             await userColl.updateOne(
                 { email: invoiceToDelete.clientEmail },
                 { $pull: { invoices: { _id: invoiceToDelete._id } } }
             );
-            
+
             await invColl.deleteOne({ _id: invoiceToDelete._id });
         }
-        
+
         res.send({ message: "🗑️ Deleted from all records" });
     } catch { res.status(500).send({ error: "Delete failed" }); }
 });

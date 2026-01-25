@@ -7,6 +7,8 @@ const authRoutes = require('./routes/authRoutes');
 const clientRoutes = require('./routes/clientRoutes');
 const invoiceRoutes = require('./routes/invoiceRoutes');
 const generalRoutes = require('./routes/generalRoutes');
+const userRoutes = require('./routes/userRoutes'); 
+
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -22,6 +24,7 @@ app.use(express.json());
 
 // --- Routes Implementation ---
 app.use('/auth', authRoutes);
+app.use('/users', userRoutes); // প্রোফাইল এপিআই এর জন্য
 app.use('/clinets', clientRoutes);
 app.use('/invoices', invoiceRoutes);
 app.use('/', generalRoutes);

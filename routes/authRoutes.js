@@ -6,6 +6,8 @@ const { connectDB } = require('../config/db');
 
 const JWT_SECRET = process.env.JWT_SECRET || "vault_secret_key_786";
 
+// ... আগের ইমপোর্টগুলো ঠিক থাকবে ...
+
 router.post('/login', async (req, res) => {
   try {
     const { email, password, role } = req.body;
@@ -31,8 +33,18 @@ router.post('/login', async (req, res) => {
 
     if (!isMatch) return res.status(401).json({ error: "Incorrect password." });
 
+    // টোকেন জেনারেশন
     const token = jwt.sign({ id: user._id, role, email: cleanEmail }, JWT_SECRET, { expiresIn: "7d" });
-    res.status(200).json({ token, role, name: user.name || user.companyName || "User", email: role === "admin" ? user.email : user.portalEmail });
+
+    // ✅ রেসপন্সে 'id' পাঠানো নিশ্চিত করা হয়েছে
+    res.status(200).json({
+      token,
+      role,
+      id: user._id, // এই লাইনটি যোগ করা হয়েছে
+      name: user.name || user.companyName || "User",
+      email: role === "admin" ? user.email : user.portalEmail
+    });
+
   } catch (err) {
     res.status(500).json({ error: "Server error during login." });
   }
