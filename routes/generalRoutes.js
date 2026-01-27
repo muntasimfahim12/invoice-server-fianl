@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { connectDB } = require('../config/db');
+const bcrypt = require('bcryptjs');
 
 /** 📊 DASHBOARD STATS API **/
 router.get('/dashboard-stats', async (req, res) => {
@@ -60,26 +61,60 @@ router.get('/projects', async (req, res) => {
     }
 });
 
-/** ⚙️ SETTINGS API **/
+
+
+
+
+/** 👤 ADMIN MANAGEMENT: ADD NEW ADMIN **/
+router.post('/manage-admins', async (req, res) => {
+    try {
+        const { name, email, password, role } = req.body;
+        if (!email || !password) return res.status(400).json({ error: "Email and Password required" });
+
+        const db = await connectDB();
+        const usersColl = db.collection("users");
+
+        const existingUser = await usersColl.findOne({ email });
+        if (existingUser) return res.status(400).json({ error: "Admin already exists!" });
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        const newAdmin = {
+            name,
+            email,
+            password: hashedPassword,
+            role: role || "admin",
+            createdAt: new Date()
+        };
+
+        await usersColl.insertOne(newAdmin);
+        res.json({ success: true, message: "New Admin Created Successfully!" });
+    } catch (err) {
+        res.status(500).json({ error: "Failed to create admin" });
+    }
+});
+
+/** ⚙️ GLOBAL SETTINGS: FETCH & UPDATE **/
 router.get('/settings', async (req, res) => {
     try {
         const db = await connectDB();
         const settings = await db.collection("settings").findOne({ id: "admin_config" });
-        res.json(settings || { adminName: "Admin User", businessName: "Your Brand" });
-    } catch (err) { res.status(500).json({ error: "Failed to fetch settings" }); }
+        res.json(settings || {});
+    } catch (err) { res.status(500).json({ error: "Error fetching settings" }); }
 });
 
 router.post('/settings', async (req, res) => {
     try {
         const db = await connectDB();
         const data = req.body;
-        delete data._id;
+        delete data._id; 
+
         await db.collection("settings").updateOne(
             { id: "admin_config" },
             { $set: { ...data, lastUpdated: new Date() } },
             { upsert: true }
         );
-        res.json({ success: true, message: "Settings Updated!" });
+        res.json({ success: true, message: "System Synced Globally!" });
     } catch (err) { res.status(500).json({ error: "Failed to save settings" }); }
 });
 

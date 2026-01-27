@@ -58,7 +58,6 @@ router.post('/', async (req, res) => {
             status: req.body.status || "Unpaid"
         };
 
-        // ১. 'invoices' কালেকশনে মেইন ডাটা সেভ
         const result = await invoiceCollection.insertOne(invoiceData);
         const savedInvoiceId = result.insertedId;
 
@@ -71,14 +70,11 @@ router.post('/', async (req, res) => {
             status: invoiceData.status,
             date: invoiceData.createdAt
         };
-
-        // ২. Admin-এর প্রোফাইলে (myCreatedInvoices) রেফারেন্স সেভ
         await usersCollection.updateOne(
             { email: invoiceData.adminEmail },
             { $push: { myCreatedInvoices: summaryData } }
         );
 
-        // ৩. Client-এর প্রোফাইলে (invoicesReceived) রেফারেন্স সেভ
         await usersCollection.updateOne(
             { email: invoiceData.clientEmail },
             { $push: { invoicesReceived: summaryData } }

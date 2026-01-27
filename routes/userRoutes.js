@@ -3,9 +3,8 @@ const router = express.Router();
 const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
-const User = require('../models/User'); // পাথ ঠিক রাখা হয়েছে
+const User = require('../models/User'); 
 
-// Cloudinary Config (আপনার .env ফাইল থেকে কীগুলো নিবে)
 cloudinary.config({
   cloud_name: process.env.CLOUD_NAME,
   api_key: process.env.CLOUD_API_KEY,
@@ -21,7 +20,6 @@ const storage = new CloudinaryStorage({
 });
 const upload = multer({ storage: storage });
 
-// ইউজারের ডেটা দেখা (GET)
 router.get('/:id', async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
@@ -32,7 +30,6 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// নাম ও বায়ো আপডেট (PUT)
 router.put('/:id', async (req, res) => {
   try {
     const { name, about } = req.body;
@@ -47,7 +44,6 @@ router.put('/:id', async (req, res) => {
   }
 });
 
-// প্রোফাইল পিকচার আপলোড (POST)
 router.post('/upload/:id', upload.single('profilePic'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ message: "No file!" });
