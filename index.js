@@ -31,7 +31,7 @@ app.use('/', generalRoutes);
 
 // Root Route
 app.get('/', (req, res) => {
-  res.send('🚀 Vault Server Running');
+  res.send('🚀Server Running');
 });
 
 // --- Server Listening Logic ---
@@ -41,4 +41,4 @@ if (process.env.NODE_ENV !== 'production') {
   });
 }
 
-module.exports = app;
+module.exports = app;  
