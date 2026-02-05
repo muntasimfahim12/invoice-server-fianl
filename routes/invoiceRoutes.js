@@ -253,7 +253,7 @@ router.patch('/:id', async (req, res) => {
 
         res.send({ message: "✅ Global update successful", updatedStatus: updated.status });
     } catch (err) {
-        console.error("Patch Error:", err); 
+        console.error("Patch Error:", err);
         res.status(500).send({ error: "Update failed: " + err.message });
     }
 });
@@ -271,6 +271,43 @@ router.delete('/:id', async (req, res) => {
         }
         res.send({ message: "🗑️ Deleted globally" });
     } catch (err) { res.status(500).send({ error: "Delete failed" }); }
+});
+
+/** 8️⃣ BULK DELETE (Updated for Global Sync) **/
+router.post('/bulk-delete', async (req, res) => {
+    try {
+        const { ids } = req.body;
+        if (!ids || !Array.isArray(ids)) return res.status(400).send({ error: "Invalid IDs" });
+
+        const database = await connectDB();
+        const invoiceColl = database.collection("invoices");
+        const userColl = database.collection("users");
+
+        const objectIds = ids.map(id => new ObjectId(id));
+
+        // ডিলিট করার আগে ইনভয়েসগুলো খুঁজে বের করা যাতে ইমেইল পাওয়া যায়
+        const invoicesToDelete = await invoiceColl.find({ _id: { $in: objectIds } }).toArray();
+
+        for (const inv of invoicesToDelete) {
+            // ✅ গ্লোবাল ক্লিনআপ: ইউজারদের প্রোফাইল থেকে ইনভয়েস আইডি মুছে ফেলা
+            await userColl.updateOne(
+                { email: inv.adminEmail },
+                { $pull: { myCreatedInvoices: { _id: inv._id } } }
+            );
+            await userColl.updateOne(
+                { email: inv.clientEmail },
+                { $pull: { invoicesReceived: { _id: inv._id } } }
+            );
+        }
+
+        
+        await invoiceColl.deleteMany({ _id: { $in: objectIds } });
+
+        res.status(200).send({ message: `🗑️ ${ids.length} Invoices deleted globally` });
+    } catch (err) {
+        console.error("Bulk Delete Error:", err);
+        res.status(500).send({ error: "Bulk delete failed" });
+    }
 });
 
 module.exports = router;

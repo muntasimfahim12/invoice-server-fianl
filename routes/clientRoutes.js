@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { ObjectId } = require('mongodb');
-const bcrypt = require('bcryptjs'); // পাসওয়ার্ড হ্যাশ করার জন্য
+const bcrypt = require('bcryptjs'); 
 const { connectDB, transporter } = require('../config/db');
 
 /** 1️⃣ GET ALL CLIENTS **/
@@ -68,7 +68,7 @@ router.post('/', async (req, res) => {
         const newClient = {
             ...req.body,
             portalEmail: finalLoginEmail,
-            password: finalPassword, // প্লেইন টেক্সট (আপনার আগের সিস্টেম অনুযায়ী)
+            password: finalPassword, 
             status: req.body.status || "Active",
             createdAt: new Date(),
             projects: (projects || []).map(p => ({
@@ -84,19 +84,18 @@ router.post('/', async (req, res) => {
 
         const result = await clientsCollection.insertOne(newClient);
 
-       
+
         const hashedPassword = await bcrypt.hash(finalPassword, 10);
-        
+
         await usersCollection.insertOne({
             name: name,
             email: finalLoginEmail,
-            password: hashedPassword, 
+            password: hashedPassword,
             role: "client",
-            clientId: result.insertedId, 
+            clientId: result.insertedId,
             createdAt: new Date()
         });
 
-        // ৩. ইমেইল অটোমেশন
         if (result.acknowledged && sendAutomationEmail) {
             const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
             const loginUrl = `${frontendUrl}/login?email=${finalLoginEmail}`;
@@ -164,6 +163,28 @@ router.put('/:id', async (req, res) => {
     }
 });
 
+/** 7️⃣ GET CLIENT BY EMAIL (For Invoice Auto-fill) **/
+router.get('/email/:email', async (req, res) => {
+    try {
+        const email = req.params.email;
+        const database = await connectDB();
+
+        
+        const collection = database.collection("clinets");
+
+        const clientData = await collection.findOne({ email: email });
+
+        if (!clientData) {
+            return res.status(404).send({ error: "Client not found with this email" });
+        }
+
+        res.send(clientData);
+    } catch (err) {
+        console.error("❌ Error fetching client by email:", err);
+        res.status(500).send({ error: "Server error" });
+    }
+});
+
 /** 5️⃣ UPDATE PROJECT STATUS **/
 router.put('/:clientId/projects/:projectId', async (req, res) => {
     const { clientId, projectId } = req.params;
@@ -194,10 +215,10 @@ router.delete('/:id', async (req, res) => {
             return res.status(400).send({ error: "Invalid ID" });
 
         const database = await connectDB();
-        
+
         await database.collection("users").deleteOne({ clientId: new ObjectId(req.params.id) });
         const result = await database.collection("clinets").deleteOne({ _id: new ObjectId(req.params.id) });
-        
+
         res.send({ message: "🗑️ Client and User deleted" });
     } catch {
         res.status(500).send({ error: "Delete failed" });
