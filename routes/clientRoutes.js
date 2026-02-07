@@ -327,4 +327,47 @@ router.post('/deploy-project', async (req, res) => {
     }
 });
 
+/** 🎯 MASTER PAYMENT SYNC: Fixed for Multiple Milestones **/
+router.put('/:id/payment', async (req, res) => {
+    try {
+        const { id } = req.params; // Client ID
+        const { projectId, invoiceId, amount, method, date } = req.body;
+
+        const database = await connectDB();
+        const clientColl = database.collection("clinets");
+
+        const result = await clientColl.updateOne(
+            { _id: new ObjectId(id) }, // শুধুমাত্র মেইন আইডি দিয়ে ফিল্টার করুন
+            {
+                $set: {
+                    // $[proj] এবং $[mile] ফিল্টার ব্যবহার করে নিখুঁতভাবে আপডেট
+                    "projects.$[proj].milestones.$[mile].status": "Paid",
+                    "projects.$[proj].milestones.$[mile].paidDate": date || new Date(),
+                    "projects.$[proj].milestones.$[mile].paymentMethod": method
+                },
+                $inc: { totalPaid: Number(amount) }
+            },
+            {
+                arrayFilters: [
+                    { "proj._id": projectId },
+                    { "mile._id": invoiceId }
+                ]
+            }
+        );
+
+        if (result.matchedCount === 0) {
+            return res.status(404).json({ error: "Client, Project or Milestone not found" });
+        }
+
+        res.status(200).json({
+            success: true,
+            message: "✅ Payment updated and ledger synced!"
+        });
+
+    } catch (err) {
+        console.error("❌ Sync Error:", err);
+        res.status(500).json({ error: "Internal server error" });
+    }
+});
+
 module.exports = router;
