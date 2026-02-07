@@ -88,7 +88,7 @@ router.get('/:id', async (req, res) => {
 router.post('/send-email', upload.single('pdf'), async (req, res) => {
     try {
         const database = await connectDB();
-        const settingsColl = database.collection("settings"); // তোমার সেটিংস কালেকশন
+        const settingsColl = database.collection("settings");
         const invColl = database.collection("invoices");
         const userColl = database.collection("users");
 
@@ -138,8 +138,6 @@ router.post('/send-email', upload.single('pdf'), async (req, res) => {
             html: emailHtml,
             attachments: [{ filename: `Invoice_${inv.invoiceId}.pdf`, content: pdfFile.buffer }]
         });
-
-        // ইমেইল গেলে স্ট্যাটাস অটোমেটিক 'Sent' করা
         const updateQuery = { invoiceId: inv.invoiceId };
         await invColl.updateOne(updateQuery, { $set: { status: "Sent", updatedAt: new Date() } });
 
@@ -204,11 +202,9 @@ router.patch('/:id', async (req, res) => {
         const invoiceColl = database.collection("invoices");
         const userColl = database.collection("users");
 
-        // ১. ID ভ্যালিডেশন এবং কুয়েরি তৈরি
         const invoiceObjectId = ObjectId.isValid(req.params.id) ? new ObjectId(req.params.id) : null;
         if (!invoiceObjectId) return res.status(400).send({ error: "Invalid Invoice ID format" });
 
-        // ২. রিকোয়েস্ট বডি থেকে _id এবং অন্য অটোজেনারেটেড ফিল্ড সরিয়ে ফেলা (এটিই মেইন এরর সল্যুশন)
         const { _id, createdAt, ...updateFields } = req.body;
 
         // ৩. ইনভয়েস আপডেট করা
@@ -221,7 +217,6 @@ router.patch('/:id', async (req, res) => {
             return res.status(404).send({ error: "Invoice not found" });
         }
 
-        // ৪. গ্লোবাল সিঙ্ক (অ্যাডমিন এবং ক্লায়েন্ট প্রোফাইলে আপডেট)
         const updated = await invoiceColl.findOne({ _id: invoiceObjectId });
 
         if (updated) {
@@ -285,11 +280,9 @@ router.post('/bulk-delete', async (req, res) => {
 
         const objectIds = ids.map(id => new ObjectId(id));
 
-        // ডিলিট করার আগে ইনভয়েসগুলো খুঁজে বের করা যাতে ইমেইল পাওয়া যায়
         const invoicesToDelete = await invoiceColl.find({ _id: { $in: objectIds } }).toArray();
 
         for (const inv of invoicesToDelete) {
-            // ✅ গ্লোবাল ক্লিনআপ: ইউজারদের প্রোফাইল থেকে ইনভয়েস আইডি মুছে ফেলা
             await userColl.updateOne(
                 { email: inv.adminEmail },
                 { $pull: { myCreatedInvoices: { _id: inv._id } } }
@@ -308,6 +301,129 @@ router.post('/bulk-delete', async (req, res) => {
         console.error("Bulk Delete Error:", err);
         res.status(500).send({ error: "Bulk delete failed" });
     }
+});
+
+/** 🔄 UPDATE INVOICE STATUS & TRIGGER NEXT MILESTONE **/
+router.put('/update-status/:invoiceId', async (req, res) => {
+    try {
+        const { status } = req.body; // status should be "Paid"
+        const database = await connectDB();
+        const invoiceColl = database.collection("invoices");
+        const clientColl = database.collection("clinets");
+
+        const currentInvoice = await invoiceColl.findOneAndUpdate(
+            { invoiceId: req.params.invoiceId },
+            { $set: { status: status, updatedAt: new Date() } },
+            { returnDocument: 'after' }
+        );
+
+        if (status === "Paid" && currentInvoice.projectId) {
+            const client = await clientColl.findOne({ 
+                "projects._id": currentInvoice.projectId 
+            });
+
+            const project = client.projects.find(p => p._id === currentInvoice.projectId);
+            const nextStep = (project.currentStep || 1) + 1;
+            const nextMilestone = project.milestones[nextStep - 1]; 
+
+            if (nextMilestone) {
+                const nextInvoiceData = {
+                    invoiceId: `INV-${Date.now().toString().slice(-6)}`,
+                    projectId: project._id,
+                    projectTitle: project.name,
+                    clientName: client.name,
+                    clientEmail: client.email,
+                    grandTotal: Number(nextMilestone.amount),
+                    remainingDue: Number(nextMilestone.amount),
+                    status: "Unpaid",
+                    createdAt: new Date(),
+                    items: [{ name: nextMilestone.name, qty: 1, price: Number(nextMilestone.amount) }]
+                };
+
+                await invoiceColl.insertOne(nextInvoiceData);
+
+                await clientColl.updateOne(
+                    { "projects._id": project._id },
+                    { $set: { "projects.$.currentStep": nextStep } }
+                );
+            } else {
+                await clientColl.updateOne(
+                    { "projects._id": project._id },
+                    { $set: { "projects.$.status": "Completed" } }
+                );
+            }
+        }
+
+        res.json({ success: true, message: "Status updated and next step triggered!" });
+    } catch (err) {
+        res.status(500).json({ error: "Automation failed" });
+    }
+});
+router.put('/update-status/:invoiceId', async (req, res) => {
+    try {
+        const { status } = req.body; // Expecting "Paid"
+        const database = await connectDB();
+        const invoiceColl = database.collection("invoices");
+        const clientColl = database.collection("clients"); // Fixed: clinets -> clients
+        const userColl = database.collection("users");
+
+        // 1. Update current invoice
+        const currentInvoice = await invoiceColl.findOneAndUpdate(
+            { invoiceId: req.params.invoiceId },
+            { $set: { status: status, updatedAt: new Date() } },
+            { returnDocument: 'after' }
+        );
+
+        if (!currentInvoice) return res.status(404).send({ error: "Invoice not found" });
+
+        // Sync Dashboard Status
+        await userColl.updateOne({ email: currentInvoice.adminEmail, "myCreatedInvoices.invoiceId": currentInvoice.invoiceId }, { $set: { "myCreatedInvoices.$.status": status } });
+        await userColl.updateOne({ email: currentInvoice.clientEmail, "invoicesReceived.invoiceId": currentInvoice.invoiceId }, { $set: { "invoicesReceived.$.status": status } });
+
+        // 2. Automation Logic
+        if (status === "Paid" && currentInvoice.projectId) {
+            const client = await clientColl.findOne({ "projects._id": currentInvoice.projectId });
+            const project = client.projects.find(p => p._id === currentInvoice.projectId);
+            
+            const nextStep = (project.currentStep || 1) + 1;
+            const nextMilestone = project.milestones[nextStep - 1];
+
+            if (nextMilestone) {
+                // Generate Next Invoice
+                const nextInvoiceData = {
+                    invoiceId: `INV-${Date.now().toString().slice(-6)}`,
+                    projectId: project._id,
+                    projectTitle: project.name,
+                    clientName: client.name,
+                    clientEmail: client.email,
+                    adminEmail: currentInvoice.adminEmail,
+                    grandTotal: Number(nextMilestone.amount),
+                    remainingDue: Number(nextMilestone.amount),
+                    currency: currentInvoice.currency || "USD",
+                    status: "Unpaid",
+                    createdAt: new Date(),
+                    items: [{ name: nextMilestone.name, qty: 1, price: Number(nextMilestone.amount) }]
+                };
+
+                const savedNext = await invoiceColl.insertOne(nextInvoiceData);
+                
+                // Sync Next Invoice to Dashboards
+                const summary = { _id: savedNext.insertedId, invoiceId: nextInvoiceData.invoiceId, projectTitle: nextInvoiceData.projectTitle, clientName: nextInvoiceData.clientName, grandTotal: nextInvoiceData.grandTotal, status: "Unpaid", date: new Date() };
+                await userColl.updateOne({ email: nextInvoiceData.adminEmail }, { $push: { myCreatedInvoices: summary } });
+                await userColl.updateOne({ email: nextInvoiceData.clientEmail }, { $push: { invoicesReceived: summary } });
+
+                // Update Project Progress
+                await clientColl.updateOne(
+                    { "projects._id": project._id },
+                    { $set: { "projects.$.currentStep": nextStep } }
+                );
+            } else {
+                await clientColl.updateOne({ "projects._id": project._id }, { $set: { "projects.$.status": "Completed" } });
+            }
+        }
+
+        res.json({ success: true, message: "Status updated & next milestone triggered!" });
+    } catch (err) { res.status(500).json({ error: "Automation failed" }); }
 });
 
 module.exports = router;

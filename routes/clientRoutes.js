@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { ObjectId } = require('mongodb');
-const bcrypt = require('bcryptjs'); 
+const bcrypt = require('bcryptjs');
 const { connectDB, transporter } = require('../config/db');
 
 /** 1️⃣ GET ALL CLIENTS **/
@@ -68,7 +68,7 @@ router.post('/', async (req, res) => {
         const newClient = {
             ...req.body,
             portalEmail: finalLoginEmail,
-            password: finalPassword, 
+            password: finalPassword,
             status: req.body.status || "Active",
             createdAt: new Date(),
             projects: (projects || []).map(p => ({
@@ -169,7 +169,7 @@ router.get('/email/:email', async (req, res) => {
         const email = req.params.email;
         const database = await connectDB();
 
-        
+
         const collection = database.collection("clinets");
 
         const clientData = await collection.findOne({ email: email });
@@ -222,6 +222,108 @@ router.delete('/:id', async (req, res) => {
         res.send({ message: "🗑️ Client and User deleted" });
     } catch {
         res.status(500).send({ error: "Delete failed" });
+    }
+});
+
+/** 🎯 MASTER ROUTE: CREATE PROJECT, AUTO-INVOICE, & EMAIL **/
+router.post('/deploy-project', async (req, res) => {
+    try {
+        const database = await connectDB();
+        const clientColl = database.collection("clinets");
+        const invoiceColl = database.collection("invoices");
+        const userColl = database.collection("users");
+
+        const { clientId, title, totalBudget, milestones, paymentType, description } = req.body;
+
+        // ১. প্রজেক্ট ডাটাবেসে সেভ হওয়া (Update Client's Project Array)
+        const projectId = new ObjectId();
+        const newProject = {
+            _id: projectId.toString(),
+            name: title,
+            budget: Number(totalBudget),
+            description: description || "",
+            status: "Active",
+            currentStep: 1, // ১ম কিস্তি ট্র্যাক করবে
+            milestones: milestones || [],
+            createdAt: new Date()
+        };
+
+        const clientUpdate = await clientColl.updateOne(
+            { _id: new ObjectId(clientId) },
+            { $push: { projects: newProject } }
+        );
+
+        if (clientUpdate.matchedCount === 0) return res.status(404).json({ error: "Client not found" });
+
+        // ২. প্রথম ইনভয়েস অটো-জেনারেট হওয়া
+        const client = await clientColl.findOne({ _id: new ObjectId(clientId) });
+        const firstMilestone = (milestones && milestones.length > 0) ? milestones[0] : null;
+
+        // Full Payment হলে পুরো টাকা, কিস্তি হলে ১ম মাইলস্টোনের টাকা
+        const invoiceAmount = paymentType === "Full Payment" ? Number(totalBudget) : Number(firstMilestone?.amount || 0);
+
+        const invoiceData = {
+            invoiceId: `INV-${Date.now().toString().slice(-6)}`,
+            projectId: projectId.toString(),
+            projectTitle: title,
+            clientName: client.name,
+            clientEmail: client.email,
+            adminEmail: process.env.EMAIL_USER,
+            grandTotal: invoiceAmount,
+            remainingDue: invoiceAmount,
+            status: "Unpaid",
+            createdAt: new Date(),
+            items: [{ name: firstMilestone?.name || "Initial Milestone", qty: 1, price: invoiceAmount }]
+        };
+
+        const invResult = await invoiceColl.insertOne(invoiceData);
+
+        // ৩. অ্যাডমিন এবং ক্লায়েন্ট ড্যাশবোর্ড আপডেট (Stats Syncing)
+        const summary = {
+            _id: invResult.insertedId,
+            invoiceId: invoiceData.invoiceId,
+            status: "Unpaid",
+            grandTotal: invoiceAmount,
+            projectTitle: title
+        };
+
+        // ইউজার কালেকশনে ইনভয়েস রিলেশন পুশ করা যাতে ড্যাশবোর্ড আপডেট হয়
+        await userColl.updateOne({ email: client.email }, { $push: { invoicesReceived: summary } });
+        await userColl.updateOne({ role: "admin" }, { $push: { myCreatedInvoices: summary } });
+
+        // ৪. অটোমেটিক ইমেইল নোটিফিকেশন পাঠানো
+        const emailHtml = `
+            <div style="font-family: sans-serif; max-width: 600px; border: 1px solid #eee; border-radius: 12px; overflow: hidden;">
+                <div style="background-color: #4177BC; padding: 20px; color: white; text-align: center;">
+                    <h2>Project Started: ${title}</h2>
+                </div>
+                <div style="padding: 20px;">
+                    <p>Hello <b>${client.name}</b>,</p>
+                    <p>Your new project has been initiated. The first invoice for this project is now ready.</p>
+                    <div style="background: #f9f9f9; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                        <p style="margin: 0;"><b>Amount Due:</b> USD ${invoiceAmount.toLocaleString()}</p>
+                        <p style="margin: 0;"><b>Invoice ID:</b> ${invoiceData.invoiceId}</p>
+                    </div>
+                    <a href="${process.env.FRONTEND_URL}/login" style="display: inline-block; background: #4177BC; color: white; padding: 12px 25px; text-decoration: none; border-radius: 8px;">View Dashboard & Pay</a>
+                </div>
+            </div>`;
+
+        await transporter.sendMail({
+            from: `"Vault System" <${process.env.EMAIL_USER}>`,
+            to: client.email,
+            subject: `New Project & Invoice: ${title}`,
+            html: emailHtml
+        });
+
+        res.status(201).json({
+            success: true,
+            message: "🚀 Project Deployed, Invoice Created & Email Sent!",
+            projectId: projectId
+        });
+
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "System failure during deployment" });
     }
 });
 
