@@ -207,7 +207,6 @@ router.patch('/:id', async (req, res) => {
 
         const { _id, createdAt, ...updateFields } = req.body;
 
-        // ৩. ইনভয়েস আপডেট করা
         const result = await invoiceColl.updateOne(
             { _id: invoiceObjectId },
             { $set: { ...updateFields, updatedAt: new Date() } }
@@ -220,7 +219,7 @@ router.patch('/:id', async (req, res) => {
         const updated = await invoiceColl.findOne({ _id: invoiceObjectId });
 
         if (updated) {
-            // অ্যাডমিন প্রোফাইল আপডেট
+           
             await userColl.updateOne(
                 { email: updated.adminEmail, "myCreatedInvoices._id": updated._id },
                 {
@@ -233,7 +232,6 @@ router.patch('/:id', async (req, res) => {
                 }
             );
 
-            // ক্লায়েন্ট প্রোফাইল আপডেট
             await userColl.updateOne(
                 { email: updated.clientEmail, "invoicesReceived._id": updated._id },
                 {

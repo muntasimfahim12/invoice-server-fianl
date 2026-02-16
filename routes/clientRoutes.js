@@ -235,7 +235,6 @@ router.post('/deploy-project', async (req, res) => {
 
         const { clientId, title, totalBudget, milestones, paymentType, description } = req.body;
 
-        // ১. প্রজেক্ট ডাটাবেসে সেভ হওয়া (Update Client's Project Array)
         const projectId = new ObjectId();
         const newProject = {
             _id: projectId.toString(),
@@ -243,7 +242,7 @@ router.post('/deploy-project', async (req, res) => {
             budget: Number(totalBudget),
             description: description || "",
             status: "Active",
-            currentStep: 1, // ১ম কিস্তি ট্র্যাক করবে
+            currentStep: 1, 
             milestones: milestones || [],
             createdAt: new Date()
         };
@@ -255,11 +254,9 @@ router.post('/deploy-project', async (req, res) => {
 
         if (clientUpdate.matchedCount === 0) return res.status(404).json({ error: "Client not found" });
 
-        // ২. প্রথম ইনভয়েস অটো-জেনারেট হওয়া
         const client = await clientColl.findOne({ _id: new ObjectId(clientId) });
         const firstMilestone = (milestones && milestones.length > 0) ? milestones[0] : null;
 
-        // Full Payment হলে পুরো টাকা, কিস্তি হলে ১ম মাইলস্টোনের টাকা
         const invoiceAmount = paymentType === "Full Payment" ? Number(totalBudget) : Number(firstMilestone?.amount || 0);
 
         const invoiceData = {
@@ -278,7 +275,6 @@ router.post('/deploy-project', async (req, res) => {
 
         const invResult = await invoiceColl.insertOne(invoiceData);
 
-        // ৩. অ্যাডমিন এবং ক্লায়েন্ট ড্যাশবোর্ড আপডেট (Stats Syncing)
         const summary = {
             _id: invResult.insertedId,
             invoiceId: invoiceData.invoiceId,
@@ -287,11 +283,9 @@ router.post('/deploy-project', async (req, res) => {
             projectTitle: title
         };
 
-        // ইউজার কালেকশনে ইনভয়েস রিলেশন পুশ করা যাতে ড্যাশবোর্ড আপডেট হয়
         await userColl.updateOne({ email: client.email }, { $push: { invoicesReceived: summary } });
         await userColl.updateOne({ role: "admin" }, { $push: { myCreatedInvoices: summary } });
 
-        // ৪. অটোমেটিক ইমেইল নোটিফিকেশন পাঠানো
         const emailHtml = `
             <div style="font-family: sans-serif; max-width: 600px; border: 1px solid #eee; border-radius: 12px; overflow: hidden;">
                 <div style="background-color: #4177BC; padding: 20px; color: white; text-align: center;">
@@ -327,36 +321,37 @@ router.post('/deploy-project', async (req, res) => {
     }
 });
 
-/** 🎯 MASTER PAYMENT SYNC: Fixed for Multiple Milestones **/
+/** 🎯 MASTER PAYMENT SYNC: Updated version **/
 router.put('/:id/payment', async (req, res) => {
     try {
-        const { id } = req.params; // Client ID
+        const { id } = req.params;
         const { projectId, invoiceId, amount, method, date } = req.body;
 
         const database = await connectDB();
         const clientColl = database.collection("clinets");
 
+        // আপডেট লজিক
         const result = await clientColl.updateOne(
-            { _id: new ObjectId(id) }, // শুধুমাত্র মেইন আইডি দিয়ে ফিল্টার করুন
+            { _id: new ObjectId(id) },
             {
                 $set: {
-                    // $[proj] এবং $[mile] ফিল্টার ব্যবহার করে নিখুঁতভাবে আপডেট
+                    
                     "projects.$[proj].milestones.$[mile].status": "Paid",
                     "projects.$[proj].milestones.$[mile].paidDate": date || new Date(),
                     "projects.$[proj].milestones.$[mile].paymentMethod": method
                 },
-                $inc: { totalPaid: Number(amount) }
+                $inc: { totalPaid: Number(amount) || 0 }
             },
             {
                 arrayFilters: [
-                    { "proj._id": projectId },
-                    { "mile._id": invoiceId }
+                    { "proj._id": projectId }, 
+                    { "mile._id": invoiceId }  
                 ]
             }
         );
 
         if (result.matchedCount === 0) {
-            return res.status(404).json({ error: "Client, Project or Milestone not found" });
+            return res.status(404).json({ error: "Sync failed: Data mismatch." });
         }
 
         res.status(200).json({
@@ -369,5 +364,4 @@ router.put('/:id/payment', async (req, res) => {
         res.status(500).json({ error: "Internal server error" });
     }
 });
-
 module.exports = router;

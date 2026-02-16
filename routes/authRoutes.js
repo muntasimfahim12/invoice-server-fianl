@@ -7,7 +7,7 @@ const { connectDB } = require('../config/db');
 
 const JWT_SECRET = process.env.JWT_SECRET || "vault_secret_key_786";
 
-/* ================= NODEMAILER CONFIG ================= */
+/*  NODEMAILER CONFIG  */
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
@@ -16,11 +16,11 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-/* ================= HELPERS ================= */
+/*  HELPERS  */
 // 6 Digit Code Generator
 const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
 
-/* ================= LOGIN ROUTE ================= */
+/*  LOGIN ROUTE  */
 router.post('/login', async (req, res) => {
   try {
     const { email, password, role } = req.body;
@@ -62,7 +62,7 @@ router.post('/login', async (req, res) => {
   }
 });
 
-/* ================= 1. FORGET PASSWORD (SEND OTP) ================= */
+/*  1. FORGET PASSWORD (SEND OTP)  */
 router.post('/forget-password', async (req, res) => {
   try {
     const { email, role } = req.body;
@@ -118,7 +118,7 @@ router.post('/forget-password', async (req, res) => {
   }
 });
 
-/* ================= 2. VERIFY OTP CODE ================= */
+/*  2. VERIFY OTP CODE  */
 router.post('/verify-code', async (req, res) => {
   try {
     const { email, code, role } = req.body;
@@ -138,7 +138,7 @@ router.post('/verify-code', async (req, res) => {
   }
 });
 
-/* ================= 3. RESET PASSWORD ================= */
+/*  3. RESET PASSWORD  */
 router.post('/reset-password', async (req, res) => {
   try {
     const { email, code, newPassword, role } = req.body;

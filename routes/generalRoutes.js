@@ -61,10 +61,6 @@ router.get('/projects', async (req, res) => {
     }
 });
 
-
-
-
-
 /** 👤 ADMIN MANAGEMENT: ADD NEW ADMIN **/
 router.post('/manage-admins', async (req, res) => {
     try {
