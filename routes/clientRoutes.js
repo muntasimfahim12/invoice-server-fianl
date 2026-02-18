@@ -4,9 +4,7 @@ const { ObjectId } = require('mongodb');
 const bcrypt = require('bcryptjs');
 const { connectDB, transporter } = require('../config/db');
 
-/** * 1️⃣ GET ALL CLIENTS 
- * সার্চ এবং স্ট্যাটাস ফিল্টারিং সহ
- **/
+/** 1️⃣ GET ALL CLIENTS **/
 router.get('/', async (req, res) => {
     try {
         const { search, status } = req.query;
@@ -48,16 +46,14 @@ router.get('/:id', async (req, res) => {
     }
 });
 
-/** 3️⃣ CREATE CLIENT (Saves to 'clinets' & 'users') **/
+/** 3️⃣ CREATE CLIENT **/
 router.post('/', async (req, res) => {
     try {
         const database = await connectDB();
         const clientsCollection = database.collection("clinets");
         const usersCollection = database.collection("users");
 
-        const {
-            name, email, portalEmail, password, projects, sendAutomationEmail
-        } = req.body;
+        const { name, email, portalEmail, password, projects, sendAutomationEmail } = req.body;
 
         const finalLoginEmail = (portalEmail || email).trim().toLowerCase();
         const finalPassword = password ? password.toString().trim() : "";
@@ -65,7 +61,7 @@ router.post('/', async (req, res) => {
         const newClient = {
             ...req.body,
             portalEmail: finalLoginEmail,
-            password: finalPassword, // Original for email display
+            password: finalPassword,
             status: req.body.status || "Active",
             totalPaid: 0,
             createdAt: new Date(),
@@ -76,7 +72,12 @@ router.post('/', async (req, res) => {
                 description: p.description || "",
                 type: p.type || "full",
                 status: p.status || "Active",
-                milestones: p.milestones || []
+                // মাইলস্টোন আইডি জেনারেট নিশ্চিত করা
+                milestones: (p.milestones || []).map(m => ({
+                    ...m,
+                    _id: m._id || new ObjectId().toString(),
+                    status: m.status || "pending"
+                }))
             }))
         };
 
@@ -95,7 +96,6 @@ router.post('/', async (req, res) => {
         if (result.acknowledged && sendAutomationEmail) {
             const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
             const loginUrl = `${frontendUrl}/login?email=${finalLoginEmail}`;
-
             const emailHtml = `
                 <div style="font-family: sans-serif; color: #333; line-height: 1.6; max-width: 600px;">
                   <p>Hello ${name},</p>
@@ -140,7 +140,10 @@ router.put('/:id', async (req, res) => {
                 description: p.description,
                 type: p.type,
                 status: p.status || "Active",
-                milestones: p.milestones || []
+                milestones: (p.milestones || []).map(m => ({
+                    ...m,
+                    _id: m._id || new ObjectId().toString()
+                }))
             }));
         }
 
@@ -160,7 +163,6 @@ router.get('/email/:email', async (req, res) => {
     try {
         const database = await connectDB();
         const clientData = await database.collection("clinets").findOne({ email: req.params.email });
-
         if (!clientData) return res.status(404).send({ error: "Client not found" });
         res.send(clientData);
     } catch (err) {
@@ -189,10 +191,8 @@ router.delete('/:id', async (req, res) => {
         if (!ObjectId.isValid(req.params.id)) return res.status(400).send({ error: "Invalid ID" });
         const database = await connectDB();
         const objId = new ObjectId(req.params.id);
-
         await database.collection("users").deleteOne({ clientId: objId });
         await database.collection("clinets").deleteOne({ _id: objId });
-
         res.send({ message: "🗑️ Client and User deleted" });
     } catch {
         res.status(500).send({ error: "Delete failed" });
@@ -210,6 +210,12 @@ router.post('/deploy-project', async (req, res) => {
         const { clientId, title, totalBudget, milestones, paymentType, description } = req.body;
 
         const projectId = new ObjectId();
+        const formattedMilestones = (milestones || []).map(m => ({
+            ...m,
+            _id: m._id || new ObjectId().toString(),
+            status: m.status || "pending"
+        }));
+
         const newProject = {
             _id: projectId.toString(),
             name: title,
@@ -217,7 +223,7 @@ router.post('/deploy-project', async (req, res) => {
             description: description || "",
             status: "Active",
             currentStep: 1,
-            milestones: milestones || [],
+            milestones: formattedMilestones,
             createdAt: new Date()
         };
 
@@ -229,7 +235,7 @@ router.post('/deploy-project', async (req, res) => {
         if (clientUpdate.matchedCount === 0) return res.status(404).json({ error: "Client not found" });
 
         const client = await clientColl.findOne({ _id: new ObjectId(clientId) });
-        const firstMilestone = (milestones && milestones.length > 0) ? milestones[0] : null;
+        const firstMilestone = (formattedMilestones.length > 0) ? formattedMilestones[0] : null;
         const invoiceAmount = paymentType === "Full Payment" ? Number(totalBudget) : Number(firstMilestone?.amount || 0);
 
         const invoiceData = {
@@ -279,13 +285,13 @@ router.post('/deploy-project', async (req, res) => {
     }
 });
 
-/** 🎯 MASTER PAYMENT SYNC: Updates DB & Sends Receipt **/
+/** 🎯 MASTER PAYMENT SYNC **/
 router.put('/:id/payment', async (req, res) => {
     try {
         const { id } = req.params;
         const { 
             projectId, 
-            invoiceId, 
+            invoiceId, // এটি আসলে মাইলস্টোনের _id
             amount, 
             method, 
             date, 
@@ -295,7 +301,6 @@ router.put('/:id/payment', async (req, res) => {
             milestoneName 
         } = req.body;
 
-        // ১. ভ্যালিডেশন: কোনো ডেটা মিসিং কি না চেক করা
         if (!projectId || !invoiceId || !id) {
             return res.status(400).json({ error: "Missing required tracking IDs." });
         }
@@ -303,8 +308,7 @@ router.put('/:id/payment', async (req, res) => {
         const database = await connectDB();
         const clientColl = database.collection("clinets");
 
-        // ২. ডাটাবেজ আপডেট
-        // নোট: যদি আপনার DB-তে projectId/invoiceId 'String' হয়, তবে এই লজিকটি পারফেক্ট।
+        // আপডেট লজিক: Array Filters ব্যবহার করে নেস্টেড মাইলস্টোন আপডেট
         const result = await clientColl.updateOne(
             { _id: new ObjectId(id) }, 
             {
@@ -323,12 +327,10 @@ router.put('/:id/payment', async (req, res) => {
             }
         );
 
-        // ৩. আপডেট চেক করা
         if (result.matchedCount === 0) {
             return res.status(404).json({ error: "Sync failed. Client or Project not found." });
         }
 
-        // ৪. ইমেইল পাঠানো (প্রফেশনাল টেমপ্লেট)
         if (clientEmail) {
             const mailOptions = {
                 from: `"Finance Dept | Vault System" <${process.env.EMAIL_USER}>`,
@@ -342,39 +344,27 @@ router.put('/:id/payment', async (req, res) => {
                         </div>
                         <div style="padding: 40px 30px;">
                             <p style="font-size: 16px;">Hi <b>${clientName || 'Valued Client'}</b>,</p>
-                            <p style="color: #64748b; line-height: 1.6;">Your payment for the milestone <b>${milestoneName}</b> has been successfully processed and logged into our ledger.</p>
-                            
+                            <p style="color: #64748b; line-height: 1.6;">Your payment for the milestone <b>${milestoneName}</b> has been successfully processed.</p>
                             <div style="background-color: #f8fafc; padding: 25px; border-radius: 16px; margin: 30px 0; border: 1px solid #f1f5f9;">
                                 <table style="width: 100%; font-size: 14px; border-collapse: collapse;">
                                     <tr> <td style="padding: 8px 0; color: #64748b;">Project</td> <td style="padding: 8px 0; text-align: right; font-weight: bold;">${projectName}</td> </tr>
                                     <tr> <td style="padding: 8px 0; color: #64748b;">Amount Paid</td> <td style="padding: 8px 0; text-align: right; font-weight: bold; color: #10b981;">$${amount}</td> </tr>
                                     <tr> <td style="padding: 8px 0; color: #64748b;">Method</td> <td style="padding: 8px 0; text-align: right; font-weight: bold;">${method}</td> </tr>
-                                    <tr> <td style="padding: 8px 0; color: #64748b;">Date</td> <td style="padding: 8px 0; text-align: right; font-weight: bold;">${new Date().toLocaleDateString()}</td> </tr>
                                 </table>
                             </div>
-                            
                             <div style="text-align: center; margin-top: 40px;">
-                                <a href="${process.env.FRONTEND_URL || '#'}" style="background-color: #1e293b; color: white; padding: 16px 32px; text-decoration: none; border-radius: 12px; font-weight: bold; font-size: 14px;">Download Full Invoice</a>
+                                <a href="${process.env.FRONTEND_URL || '#'}" style="background-color: #1e293b; color: white; padding: 16px 32px; text-decoration: none; border-radius: 12px; font-weight: bold; font-size: 14px;">View Dashboard</a>
                             </div>
-                        </div>
-                        <div style="background-color: #f1f5f9; padding: 20px; text-align: center; font-size: 12px; color: #94a3b8;">
-                            This is an automated receipt. Please keep it for your records.
                         </div>
                     </div>`
             };
-
             transporter.sendMail(mailOptions).catch(err => console.error("Email Error:", err));
         }
 
-        res.status(200).json({ 
-            success: true, 
-            message: "✅ Payment synced & Receipt sent!",
-            updatedCount: result.modifiedCount 
-        });
-
+        res.status(200).json({ success: true, message: "✅ Payment synced successfully!" });
     } catch (err) {
         console.error("❌ MASTER SYNC ERROR:", err);
-        res.status(500).json({ error: "Internal server error", details: err.message });
+        res.status(500).json({ error: "Internal server error" });
     }
 });
 
