@@ -4,7 +4,9 @@ const { ObjectId } = require('mongodb');
 const bcrypt = require('bcryptjs');
 const { connectDB, transporter } = require('../config/db');
 
-/** 1️⃣ GET ALL CLIENTS **/
+/** * 1️⃣ GET ALL CLIENTS 
+ * সার্চ এবং স্ট্যাটাস ফিল্টারিং সহ
+ **/
 router.get('/', async (req, res) => {
     try {
         const { search, status } = req.query;
@@ -46,7 +48,7 @@ router.get('/:id', async (req, res) => {
     }
 });
 
-/** 3️⃣ CREATE CLIENT (Saves to both 'clinets' and 'users' collections) **/
+/** 3️⃣ CREATE CLIENT (Saves to 'clinets' & 'users') **/
 router.post('/', async (req, res) => {
     try {
         const database = await connectDB();
@@ -54,12 +56,7 @@ router.post('/', async (req, res) => {
         const usersCollection = database.collection("users");
 
         const {
-            name,
-            email,
-            portalEmail,
-            password,
-            projects,
-            sendAutomationEmail
+            name, email, portalEmail, password, projects, sendAutomationEmail
         } = req.body;
 
         const finalLoginEmail = (portalEmail || email).trim().toLowerCase();
@@ -68,8 +65,9 @@ router.post('/', async (req, res) => {
         const newClient = {
             ...req.body,
             portalEmail: finalLoginEmail,
-            password: finalPassword,
+            password: finalPassword, // Original for email display
             status: req.body.status || "Active",
+            totalPaid: 0,
             createdAt: new Date(),
             projects: (projects || []).map(p => ({
                 _id: new ObjectId().toString(),
@@ -83,8 +81,6 @@ router.post('/', async (req, res) => {
         };
 
         const result = await clientsCollection.insertOne(newClient);
-
-
         const hashedPassword = await bcrypt.hash(finalPassword, 10);
 
         await usersCollection.insertOne({
@@ -100,24 +96,20 @@ router.post('/', async (req, res) => {
             const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
             const loginUrl = `${frontendUrl}/login?email=${finalLoginEmail}`;
 
-            const simpleEmailHtml = `
+            const emailHtml = `
                 <div style="font-family: sans-serif; color: #333; line-height: 1.6; max-width: 600px;">
                   <p>Hello ${name},</p>
                   <p>Your project workspace is ready. Log in using the credentials below:</p>
-                  <p>
-                    <strong>Email:</strong> ${finalLoginEmail}<br>
-                    <strong>Password:</strong> ${finalPassword}
-                  </p>
+                  <p><strong>Email:</strong> ${finalLoginEmail}<br><strong>Password:</strong> ${finalPassword}</p>
                   <p><a href="${loginUrl}" style="background-color: #4177BC; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;">Login to Dashboard</a></p>
                   <p>Best Regards,<br>Vault LedgerPRO Team</p>
-                </div>
-            `;
+                </div>`;
 
             await transporter.sendMail({
                 from: `"Vault System" <${process.env.EMAIL_USER}>`,
                 to: email,
                 subject: `Login Credentials for ${name}`,
-                html: simpleEmailHtml
+                html: emailHtml
             });
         }
 
@@ -152,7 +144,7 @@ router.put('/:id', async (req, res) => {
             }));
         }
 
-        const result = await collection.updateOne(
+        await collection.updateOne(
             { _id: new ObjectId(req.params.id) },
             { $set: updateData }
         );
@@ -163,61 +155,43 @@ router.put('/:id', async (req, res) => {
     }
 });
 
-/** 7️⃣ GET CLIENT BY EMAIL (For Invoice Auto-fill) **/
+/** 5️⃣ GET CLIENT BY EMAIL **/
 router.get('/email/:email', async (req, res) => {
     try {
-        const email = req.params.email;
         const database = await connectDB();
+        const clientData = await database.collection("clinets").findOne({ email: req.params.email });
 
-
-        const collection = database.collection("clinets");
-
-        const clientData = await collection.findOne({ email: email });
-
-        if (!clientData) {
-            return res.status(404).send({ error: "Client not found with this email" });
-        }
-
+        if (!clientData) return res.status(404).send({ error: "Client not found" });
         res.send(clientData);
     } catch (err) {
-        console.error("❌ Error fetching client by email:", err);
         res.status(500).send({ error: "Server error" });
     }
 });
 
-/** 5️⃣ UPDATE PROJECT STATUS **/
+/** 6️⃣ UPDATE PROJECT STATUS ONLY **/
 router.put('/:clientId/projects/:projectId', async (req, res) => {
-    const { clientId, projectId } = req.params;
-    const { status } = req.body;
-
     try {
+        const { clientId, projectId } = req.params;
         const database = await connectDB();
-        const collection = database.collection("clinets");
-
-        const result = await collection.updateOne(
-            {
-                _id: new ObjectId(clientId),
-                projects: { $elemMatch: { _id: projectId } }
-            },
-            { $set: { "projects.$.status": status } }
+        const result = await database.collection("clinets").updateOne(
+            { _id: new ObjectId(clientId), "projects._id": projectId },
+            { $set: { "projects.$.status": req.body.status } }
         );
-
-        res.send({ message: "✅ Project status updated", status });
+        res.send({ message: "✅ Project status updated", status: req.body.status });
     } catch (err) {
         res.status(500).send({ message: "Update failed", error: err.message });
     }
 });
 
-/** 6️⃣ DELETE CLIENT (Should also delete from users) **/
+/** 7️⃣ DELETE CLIENT & USER **/
 router.delete('/:id', async (req, res) => {
     try {
-        if (!ObjectId.isValid(req.params.id))
-            return res.status(400).send({ error: "Invalid ID" });
-
+        if (!ObjectId.isValid(req.params.id)) return res.status(400).send({ error: "Invalid ID" });
         const database = await connectDB();
+        const objId = new ObjectId(req.params.id);
 
-        await database.collection("users").deleteOne({ clientId: new ObjectId(req.params.id) });
-        const result = await database.collection("clinets").deleteOne({ _id: new ObjectId(req.params.id) });
+        await database.collection("users").deleteOne({ clientId: objId });
+        await database.collection("clinets").deleteOne({ _id: objId });
 
         res.send({ message: "🗑️ Client and User deleted" });
     } catch {
@@ -225,7 +199,7 @@ router.delete('/:id', async (req, res) => {
     }
 });
 
-/** 🎯 MASTER ROUTE: CREATE PROJECT, AUTO-INVOICE, & EMAIL **/
+/** 🚀 MASTER ROUTE: DEPLOY PROJECT & AUTO-INVOICE **/
 router.post('/deploy-project', async (req, res) => {
     try {
         const database = await connectDB();
@@ -242,7 +216,7 @@ router.post('/deploy-project', async (req, res) => {
             budget: Number(totalBudget),
             description: description || "",
             status: "Active",
-            currentStep: 1, 
+            currentStep: 1,
             milestones: milestones || [],
             createdAt: new Date()
         };
@@ -256,7 +230,6 @@ router.post('/deploy-project', async (req, res) => {
 
         const client = await clientColl.findOne({ _id: new ObjectId(clientId) });
         const firstMilestone = (milestones && milestones.length > 0) ? milestones[0] : null;
-
         const invoiceAmount = paymentType === "Full Payment" ? Number(totalBudget) : Number(firstMilestone?.amount || 0);
 
         const invoiceData = {
@@ -274,29 +247,20 @@ router.post('/deploy-project', async (req, res) => {
         };
 
         const invResult = await invoiceColl.insertOne(invoiceData);
-
-        const summary = {
-            _id: invResult.insertedId,
-            invoiceId: invoiceData.invoiceId,
-            status: "Unpaid",
-            grandTotal: invoiceAmount,
-            projectTitle: title
-        };
+        const summary = { _id: invResult.insertedId, invoiceId: invoiceData.invoiceId, status: "Unpaid", grandTotal: invoiceAmount, projectTitle: title };
 
         await userColl.updateOne({ email: client.email }, { $push: { invoicesReceived: summary } });
         await userColl.updateOne({ role: "admin" }, { $push: { myCreatedInvoices: summary } });
 
         const emailHtml = `
             <div style="font-family: sans-serif; max-width: 600px; border: 1px solid #eee; border-radius: 12px; overflow: hidden;">
-                <div style="background-color: #4177BC; padding: 20px; color: white; text-align: center;">
-                    <h2>Project Started: ${title}</h2>
-                </div>
+                <div style="background-color: #4177BC; padding: 20px; color: white; text-align: center;"><h2>Project Started: ${title}</h2></div>
                 <div style="padding: 20px;">
                     <p>Hello <b>${client.name}</b>,</p>
-                    <p>Your new project has been initiated. The first invoice for this project is now ready.</p>
+                    <p>Your new project has been initiated and the first invoice is ready.</p>
                     <div style="background: #f9f9f9; padding: 15px; border-radius: 8px; margin: 20px 0;">
-                        <p style="margin: 0;"><b>Amount Due:</b> USD ${invoiceAmount.toLocaleString()}</p>
-                        <p style="margin: 0;"><b>Invoice ID:</b> ${invoiceData.invoiceId}</p>
+                        <p><b>Amount Due:</b> USD ${invoiceAmount.toLocaleString()}</p>
+                        <p><b>Invoice ID:</b> ${invoiceData.invoiceId}</p>
                     </div>
                     <a href="${process.env.FRONTEND_URL}/login" style="display: inline-block; background: #4177BC; color: white; padding: 12px 25px; text-decoration: none; border-radius: 8px;">View Dashboard & Pay</a>
                 </div>
@@ -309,35 +273,44 @@ router.post('/deploy-project', async (req, res) => {
             html: emailHtml
         });
 
-        res.status(201).json({
-            success: true,
-            message: "🚀 Project Deployed, Invoice Created & Email Sent!",
-            projectId: projectId
-        });
-
+        res.status(201).json({ success: true, message: "🚀 Deployed & Invoice Sent!", projectId });
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: "System failure during deployment" });
+        res.status(500).json({ error: "Deployment failure" });
     }
 });
 
-/** 🎯 MASTER PAYMENT SYNC: Updated version **/
+/** 🎯 MASTER PAYMENT SYNC: Updates DB & Sends Receipt **/
 router.put('/:id/payment', async (req, res) => {
     try {
         const { id } = req.params;
-        const { projectId, invoiceId, amount, method, date } = req.body;
+        const { 
+            projectId, 
+            invoiceId, 
+            amount, 
+            method, 
+            date, 
+            clientEmail, 
+            clientName, 
+            projectName, 
+            milestoneName 
+        } = req.body;
+
+        // ১. ভ্যালিডেশন: কোনো ডেটা মিসিং কি না চেক করা
+        if (!projectId || !invoiceId || !id) {
+            return res.status(400).json({ error: "Missing required tracking IDs." });
+        }
 
         const database = await connectDB();
         const clientColl = database.collection("clinets");
 
-        // আপডেট লজিক
+        // ২. ডাটাবেজ আপডেট
+        // নোট: যদি আপনার DB-তে projectId/invoiceId 'String' হয়, তবে এই লজিকটি পারফেক্ট।
         const result = await clientColl.updateOne(
-            { _id: new ObjectId(id) },
+            { _id: new ObjectId(id) }, 
             {
                 $set: {
-                    
                     "projects.$[proj].milestones.$[mile].status": "Paid",
-                    "projects.$[proj].milestones.$[mile].paidDate": date || new Date(),
+                    "projects.$[proj].milestones.$[mile].paidDate": date || new Date().toISOString(),
                     "projects.$[proj].milestones.$[mile].paymentMethod": method
                 },
                 $inc: { totalPaid: Number(amount) || 0 }
@@ -345,23 +318,64 @@ router.put('/:id/payment', async (req, res) => {
             {
                 arrayFilters: [
                     { "proj._id": projectId }, 
-                    { "mile._id": invoiceId }  
+                    { "mile._id": invoiceId }
                 ]
             }
         );
 
+        // ৩. আপডেট চেক করা
         if (result.matchedCount === 0) {
-            return res.status(404).json({ error: "Sync failed: Data mismatch." });
+            return res.status(404).json({ error: "Sync failed. Client or Project not found." });
         }
 
-        res.status(200).json({
-            success: true,
-            message: "✅ Payment updated and ledger synced!"
+        // ৪. ইমেইল পাঠানো (প্রফেশনাল টেমপ্লেট)
+        if (clientEmail) {
+            const mailOptions = {
+                from: `"Finance Dept | Vault System" <${process.env.EMAIL_USER}>`,
+                to: clientEmail,
+                subject: `Payment Receipt: ${milestoneName}`,
+                html: `
+                    <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: auto; border: 1px solid #e2e8f0; border-radius: 24px; overflow: hidden; color: #1e293b;">
+                        <div style="background-color: #4177BC; padding: 40px 20px; text-align: center; color: white;">
+                            <h1 style="margin: 0; font-size: 24px;">Payment Confirmed</h1>
+                            <p style="opacity: 0.8; margin-top: 8px;">Transaction ID: ${Math.random().toString(36).toUpperCase().substring(7)}</p>
+                        </div>
+                        <div style="padding: 40px 30px;">
+                            <p style="font-size: 16px;">Hi <b>${clientName || 'Valued Client'}</b>,</p>
+                            <p style="color: #64748b; line-height: 1.6;">Your payment for the milestone <b>${milestoneName}</b> has been successfully processed and logged into our ledger.</p>
+                            
+                            <div style="background-color: #f8fafc; padding: 25px; border-radius: 16px; margin: 30px 0; border: 1px solid #f1f5f9;">
+                                <table style="width: 100%; font-size: 14px; border-collapse: collapse;">
+                                    <tr> <td style="padding: 8px 0; color: #64748b;">Project</td> <td style="padding: 8px 0; text-align: right; font-weight: bold;">${projectName}</td> </tr>
+                                    <tr> <td style="padding: 8px 0; color: #64748b;">Amount Paid</td> <td style="padding: 8px 0; text-align: right; font-weight: bold; color: #10b981;">$${amount}</td> </tr>
+                                    <tr> <td style="padding: 8px 0; color: #64748b;">Method</td> <td style="padding: 8px 0; text-align: right; font-weight: bold;">${method}</td> </tr>
+                                    <tr> <td style="padding: 8px 0; color: #64748b;">Date</td> <td style="padding: 8px 0; text-align: right; font-weight: bold;">${new Date().toLocaleDateString()}</td> </tr>
+                                </table>
+                            </div>
+                            
+                            <div style="text-align: center; margin-top: 40px;">
+                                <a href="${process.env.FRONTEND_URL || '#'}" style="background-color: #1e293b; color: white; padding: 16px 32px; text-decoration: none; border-radius: 12px; font-weight: bold; font-size: 14px;">Download Full Invoice</a>
+                            </div>
+                        </div>
+                        <div style="background-color: #f1f5f9; padding: 20px; text-align: center; font-size: 12px; color: #94a3b8;">
+                            This is an automated receipt. Please keep it for your records.
+                        </div>
+                    </div>`
+            };
+
+            transporter.sendMail(mailOptions).catch(err => console.error("Email Error:", err));
+        }
+
+        res.status(200).json({ 
+            success: true, 
+            message: "✅ Payment synced & Receipt sent!",
+            updatedCount: result.modifiedCount 
         });
 
     } catch (err) {
-        console.error("❌ Sync Error:", err);
-        res.status(500).json({ error: "Internal server error" });
+        console.error("❌ MASTER SYNC ERROR:", err);
+        res.status(500).json({ error: "Internal server error", details: err.message });
     }
 });
+
 module.exports = router;

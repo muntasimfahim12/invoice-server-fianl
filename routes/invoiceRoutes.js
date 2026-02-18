@@ -359,10 +359,10 @@ router.put('/update-status/:invoiceId', async (req, res) => {
 });
 router.put('/update-status/:invoiceId', async (req, res) => {
     try {
-        const { status } = req.body; // Expecting "Paid"
+        const { status } = req.body; 
         const database = await connectDB();
         const invoiceColl = database.collection("invoices");
-        const clientColl = database.collection("clients"); // Fixed: clinets -> clients
+        const clientColl = database.collection("clients"); 
         const userColl = database.collection("users");
 
         // 1. Update current invoice
