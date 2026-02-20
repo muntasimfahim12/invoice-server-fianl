@@ -46,11 +46,12 @@ router.get('/projects', async (req, res) => {
         const projects = client.projects.map(project => ({
             _id: project._id,
             title: project.name,
+            projectName: project.name,
             description: project.description,
             budget: project.budget,
+            paidAmount: project.paidAmount || 0, 
             status: project.status || "Active",
-            deadline: project.deadline || "Not Set",
-            progress: project.progress || 0,
+            milestones: project.milestones || [], 
             clientName: client.name,
             clientId: client._id
         }));
@@ -61,15 +62,14 @@ router.get('/projects', async (req, res) => {
     }
 });
 
-/** 🔍 GET SINGLE PROJECT DETAILS BY ID (Updated Version) **/
+/** 🔍 GET SINGLE PROJECT DETAILS BY ID (With Auto-Progress) **/
 router.get('/project-details/:id', async (req, res) => {
     try {
         const { id } = req.params;
         const database = await connectDB();
-        
-        // আইডি দিয়ে সরাসরি ওই ক্লায়েন্টকে খোঁজা যার প্রজেক্ট লিস্টে এই আইডি আছে
-        const client = await database.collection("clinets").findOne({ 
-            "projects._id": id 
+
+        const client = await database.collection("clinets").findOne({
+            "projects._id": id
         });
 
         if (!client) {
@@ -79,17 +79,30 @@ router.get('/project-details/:id', async (req, res) => {
 
         const project = client.projects.find(p => String(p._id) === String(id));
 
+        let calculatedProgress = 0;
+
+        if (project.milestones && project.milestones.length > 0) {
+            const paidMilestones = project.milestones.filter(
+                m => m.status && m.status.toLowerCase() === 'paid'
+            ).length;
+
+            calculatedProgress = Math.round((paidMilestones / project.milestones.length) * 100);
+        } else {
+            calculatedProgress = project.progress || 0;
+        }
+
         res.json({
             ...project,
+            progress: calculatedProgress,
             clientName: client.name,
             clientEmail: client.email
         });
+
     } catch (err) {
         console.error("Backend Error:", err);
         res.status(500).json({ error: "Server Error" });
     }
 });
-
 /** 👤 ADMIN MANAGEMENT: ADD NEW ADMIN **/
 router.post('/manage-admins', async (req, res) => {
     try {
@@ -132,7 +145,7 @@ router.post('/settings', async (req, res) => {
     try {
         const db = await connectDB();
         const data = req.body;
-        delete data._id; 
+        delete data._id;
 
         await db.collection("settings").updateOne(
             { id: "admin_config" },
@@ -141,6 +154,57 @@ router.post('/settings', async (req, res) => {
         );
         res.json({ success: true, message: "System Synced Globally!" });
     } catch (err) { res.status(500).json({ error: "Failed to save settings" }); }
+});
+
+/** 💳 MILESTONE PAYMENT UPDATE API **/
+router.patch('/update-milestone-status', async (req, res) => {
+    try {
+        const { projectId, milestoneIndex, isCompleted } = req.body;
+
+        if (!projectId || milestoneIndex === undefined) {
+            return res.status(400).json({ error: "Missing required data" });
+        }
+
+        const db = await connectDB();
+        const clientsColl = db.collection("clinets");
+
+        // ১. ওই নির্দিষ্ট প্রজেক্ট এবং মাইলস্টোনটি খুঁজে বের করুন
+        const client = await clientsColl.findOne({ "projects._id": projectId });
+        if (!client) return res.status(404).json({ error: "Project not found" });
+
+        // ২. ডাটাবেস আপডেট কুয়েরি
+        // এখানে মাইলস্টোনের isCompleted স্ট্যাটাস আপডেট হচ্ছে
+        const updateQuery = {
+            $set: {
+                [`projects.$.milestones.${milestoneIndex}.isCompleted`]: isCompleted,
+                [`projects.$.milestones.${milestoneIndex}.status`]: isCompleted ? "Paid" : "Pending"
+            }
+        };
+
+        const result = await clientsColl.updateOne(
+            { "projects._id": projectId },
+            updateQuery
+        );
+
+        if (result.modifiedCount > 0 && isCompleted) {
+            const updatedClient = await clientsColl.findOne({ "projects._id": projectId });
+            const project = updatedClient.projects.find(p => String(p._id) === String(projectId));
+
+            const totalPaid = project.milestones
+                .filter(m => m.isCompleted === true || m.isCompleted === "true" || m.status === "Paid")
+                .reduce((sum, m) => sum + Number(m.amount || 0), 0);
+
+            await clientsColl.updateOne(
+                { "projects._id": projectId },
+                { $set: { "projects.$.paidAmount": totalPaid } }
+            );
+        }
+
+        res.json({ success: true, message: "Milestone synchronized successfully!" });
+    } catch (err) {
+        console.error("Error updating milestone:", err);
+        res.status(500).json({ error: "Failed to update milestone" });
+    }
 });
 
 module.exports = router;
