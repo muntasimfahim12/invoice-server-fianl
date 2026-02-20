@@ -285,20 +285,64 @@ router.post('/deploy-project', async (req, res) => {
     }
 });
 
+/** 🎯 GET LOGGED-IN CLIENT PROFILE WITH 30-DAY STATEMENT **/
+router.get('/profile/me', async (req, res) => {
+    try {
+        const userEmail = req.query.email;
+        if (!userEmail) return res.status(400).send({ error: "Email is required" });
+
+        const database = await connectDB();
+        const clientData = await database.collection("clinets").findOne({
+            $or: [{ email: userEmail }, { portalEmail: userEmail }]
+        });
+
+        if (!clientData) return res.status(404).send({ error: "Client not found" });
+
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+        let statement = [];
+        if (clientData.projects) {
+            clientData.projects.forEach(project => {
+                project.milestones.forEach(m => {
+                    if (m.status === "Paid" && m.paidDate) {
+                        const pDate = new Date(m.paidDate);
+                        if (pDate >= thirtyDaysAgo) {
+                            statement.push({
+                                date: m.paidDate,
+                                project: project.name,
+                                description: m.name,
+                                amount: m.amount,
+                                method: m.paymentMethod || "N/A",
+                                status: "Settled"
+                            });
+                        }
+                    }
+                });
+            });
+        }
+
+        statement.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+        res.send({ ...clientData, recentStatement: statement });
+    } catch (err) {
+        res.status(500).send({ error: "Server error" });
+    }
+});
 /** 🎯 MASTER PAYMENT SYNC **/
 router.put('/:id/payment', async (req, res) => {
     try {
         const { id } = req.params;
-        const { 
-            projectId, 
-            invoiceId, // এটি আসলে মাইলস্টোনের _id
-            amount, 
-            method, 
-            date, 
-            clientEmail, 
-            clientName, 
-            projectName, 
-            milestoneName 
+        const {
+            projectId,
+            invoiceId,
+            amount,
+            method,
+            date,
+            clientEmail,
+            clientName,
+            projectName,
+            milestoneName
         } = req.body;
 
         if (!projectId || !invoiceId || !id) {
@@ -310,7 +354,7 @@ router.put('/:id/payment', async (req, res) => {
 
         // আপডেট লজিক: Array Filters ব্যবহার করে নেস্টেড মাইলস্টোন আপডেট
         const result = await clientColl.updateOne(
-            { _id: new ObjectId(id) }, 
+            { _id: new ObjectId(id) },
             {
                 $set: {
                     "projects.$[proj].milestones.$[mile].status": "Paid",
@@ -321,7 +365,7 @@ router.put('/:id/payment', async (req, res) => {
             },
             {
                 arrayFilters: [
-                    { "proj._id": projectId }, 
+                    { "proj._id": projectId },
                     { "mile._id": invoiceId }
                 ]
             }

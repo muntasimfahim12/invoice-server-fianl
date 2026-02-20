@@ -61,6 +61,35 @@ router.get('/projects', async (req, res) => {
     }
 });
 
+/** 🔍 GET SINGLE PROJECT DETAILS BY ID (Updated Version) **/
+router.get('/project-details/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const database = await connectDB();
+        
+        // আইডি দিয়ে সরাসরি ওই ক্লায়েন্টকে খোঁজা যার প্রজেক্ট লিস্টে এই আইডি আছে
+        const client = await database.collection("clinets").findOne({ 
+            "projects._id": id 
+        });
+
+        if (!client) {
+            console.log("No client found with project ID:", id);
+            return res.status(404).json({ error: "Project not found" });
+        }
+
+        const project = client.projects.find(p => String(p._id) === String(id));
+
+        res.json({
+            ...project,
+            clientName: client.name,
+            clientEmail: client.email
+        });
+    } catch (err) {
+        console.error("Backend Error:", err);
+        res.status(500).json({ error: "Server Error" });
+    }
+});
+
 /** 👤 ADMIN MANAGEMENT: ADD NEW ADMIN **/
 router.post('/manage-admins', async (req, res) => {
     try {
