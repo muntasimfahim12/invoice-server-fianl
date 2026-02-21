@@ -32,7 +32,7 @@ router.get('/dashboard-stats', async (req, res) => {
     }
 });
 
-/** 🚀 GET PROJECTS FOR A SINGLE CLIENT BY EMAIL **/
+/** 🚀 GET PROJECTS FOR A SINGLE CLIENT BY EMAIL (Logic: Admin Date Based) **/
 router.get('/projects', async (req, res) => {
     try {
         const { email } = req.query;
@@ -43,26 +43,51 @@ router.get('/projects', async (req, res) => {
 
         if (!client || !Array.isArray(client.projects)) return res.send([]);
 
-        const projects = client.projects.map(project => ({
-            _id: project._id,
-            title: project.name,
-            projectName: project.name,
-            description: project.description,
-            budget: project.budget,
-            paidAmount: project.paidAmount || 0, 
-            status: project.status || "Active",
-            milestones: project.milestones || [], 
-            clientName: client.name,
-            clientId: client._id
-        }));
+        // Aajker date kora holo (Time 00:00:00) comparison-er jonno
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        const projects = client.projects.map(project => {
+            const processedMilestones = (project.milestones || []).map(m => {
+                // Admin theke asha dueDate-ke Date object-e convert kora
+                const milestoneDate = m.dueDate ? new Date(m.dueDate) : null;
+                if(milestoneDate) milestoneDate.setHours(0, 0, 0, 0);
+
+                const isPaid = m.isCompleted === true || m.isCompleted === "true" || m.status?.toLowerCase() === "paid";
+
+                // MAIN LOGIC: Jodi paid na hoy EBONG (Admin date na dile open thakbe OR aajker date jodi milestone date-er shoman ba beshi hoy)
+                const isDateReached = milestoneDate ? today.getTime() >= milestoneDate.getTime() : true;
+                const isPayable = !isPaid && isDateReached;
+
+                return {
+                    ...m,
+                    isPayable: isPayable, // Frontend eita use kore button enable korbe
+                    isLocked: !isPaid && !isDateReached // Frontend eita use kore lock icon dekhabe
+                };
+            });
+
+            return {
+                _id: project._id,
+                title: project.name,
+                projectName: project.name,
+                description: project.description,
+                budget: project.budget,
+                paidAmount: project.paidAmount || 0,
+                status: project.status || "Active",
+                milestones: processedMilestones, 
+                clientName: client.name,
+                clientId: client._id
+            };
+        });
 
         res.send(projects.reverse());
     } catch (err) {
+        console.error("Project Fetch Error:", err);
         res.status(500).send({ error: "Failed to fetch client projects" });
     }
 });
 
-/** 🔍 GET SINGLE PROJECT DETAILS BY ID (With Auto-Progress) **/
+/** 🔍 GET SINGLE PROJECT DETAILS BY ID **/
 router.get('/project-details/:id', async (req, res) => {
     try {
         const { id } = req.params;
@@ -72,20 +97,16 @@ router.get('/project-details/:id', async (req, res) => {
             "projects._id": id
         });
 
-        if (!client) {
-            console.log("No client found with project ID:", id);
-            return res.status(404).json({ error: "Project not found" });
-        }
+        if (!client) return res.status(404).json({ error: "Project not found" });
 
         const project = client.projects.find(p => String(p._id) === String(id));
 
+        // Auto Progress calculation logic
         let calculatedProgress = 0;
-
         if (project.milestones && project.milestones.length > 0) {
             const paidMilestones = project.milestones.filter(
                 m => m.status && m.status.toLowerCase() === 'paid'
             ).length;
-
             calculatedProgress = Math.round((paidMilestones / project.milestones.length) * 100);
         } else {
             calculatedProgress = project.progress || 0;
@@ -97,12 +118,11 @@ router.get('/project-details/:id', async (req, res) => {
             clientName: client.name,
             clientEmail: client.email
         });
-
     } catch (err) {
-        console.error("Backend Error:", err);
         res.status(500).json({ error: "Server Error" });
     }
 });
+
 /** 👤 ADMIN MANAGEMENT: ADD NEW ADMIN **/
 router.post('/manage-admins', async (req, res) => {
     try {
@@ -156,7 +176,7 @@ router.post('/settings', async (req, res) => {
     } catch (err) { res.status(500).json({ error: "Failed to save settings" }); }
 });
 
-/** 💳 MILESTONE PAYMENT UPDATE API **/
+/** 💳 MILESTONE PAYMENT UPDATE API (Syncs Paid Amount) **/
 router.patch('/update-milestone-status', async (req, res) => {
     try {
         const { projectId, milestoneIndex, isCompleted } = req.body;
@@ -168,12 +188,6 @@ router.patch('/update-milestone-status', async (req, res) => {
         const db = await connectDB();
         const clientsColl = db.collection("clinets");
 
-        // ১. ওই নির্দিষ্ট প্রজেক্ট এবং মাইলস্টোনটি খুঁজে বের করুন
-        const client = await clientsColl.findOne({ "projects._id": projectId });
-        if (!client) return res.status(404).json({ error: "Project not found" });
-
-        // ২. ডাটাবেস আপডেট কুয়েরি
-        // এখানে মাইলস্টোনের isCompleted স্ট্যাটাস আপডেট হচ্ছে
         const updateQuery = {
             $set: {
                 [`projects.$.milestones.${milestoneIndex}.isCompleted`]: isCompleted,
@@ -202,7 +216,6 @@ router.patch('/update-milestone-status', async (req, res) => {
 
         res.json({ success: true, message: "Milestone synchronized successfully!" });
     } catch (err) {
-        console.error("Error updating milestone:", err);
         res.status(500).json({ error: "Failed to update milestone" });
     }
 });
