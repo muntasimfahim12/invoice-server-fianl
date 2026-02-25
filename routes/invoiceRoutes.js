@@ -8,21 +8,9 @@ const { connectDB } = require('../config/db');
 
 const upload = multer({ storage: multer.memoryStorage() });
 
-// ইমেইল ট্রান্সপোর্টার কনফিগারেশন
-const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS
-    }
-});
-
-/** * HELPER FUNCTION: Professional PDF Generator (Genie Hack Style)
- */
-const generateGenieInvoicePDF = (data, stream) => {
-    const doc = new PDFDocument({ size: 'A4', margin: 50 });
-    doc.pipe(stream);
-
+/** 🛠️ HELPER: PDF Generator (Fixed Logic) **/
+const generateGenieInvoicePDF = (data, doc) => {
+    // Styling & Header
     doc.fillColor('#0F172A').fontSize(22).text('GENIE HACK', 50, 50, { stroke: true });
     doc.fontSize(10).fillColor('#64748B').text('Cyber Security & Digital Solutions', 50, 75);
 
@@ -43,7 +31,7 @@ const generateGenieInvoicePDF = (data, stream) => {
     doc.fillColor('#000').fontSize(11).font('Helvetica-Bold').text(data.clientName, 350, topOfInfo + 15);
     doc.fontSize(9).font('Helvetica').fillColor('#64748B').text(data.clientEmail, 350, topOfInfo + 30);
 
-
+    // Items Table
     const tableTop = 230;
     doc.rect(50, tableTop, 500, 25).fill('#4177BC');
     doc.fillColor('#FFF').fontSize(10).text('Description', 60, tableTop + 8);
@@ -51,19 +39,17 @@ const generateGenieInvoicePDF = (data, stream) => {
     doc.text('Price', 380, tableTop + 8);
     doc.text('Total', 480, tableTop + 8);
 
-
     let i = 0;
     const items = data.items || [{ name: data.projectTitle, qty: 1, price: data.grandTotal }];
     items.forEach((item, index) => {
         const y = tableTop + 25 + (index * 25);
         if (index % 2 === 0) doc.rect(50, y, 500, 25).fill('#F8FAFC');
-        doc.fillColor('#000').font('Helvetica').text(item.name, 60, y + 8);
-        doc.text(item.qty.toString(), 300, y + 8);
-        doc.text(`${data.currency || '$'} ${Number(item.price).toLocaleString()}`, 380, y + 8);
-        doc.text(`${data.currency || '$'} ${(item.qty * item.price).toLocaleString()}`, 480, y + 8);
+        doc.fillColor('#000').font('Helvetica').text(item.name || "Service", 60, y + 8);
+        doc.text((item.qty || 1).toString(), 300, y + 8);
+        doc.text(`${data.currency || '$'} ${Number(item.price || item.rate || 0).toLocaleString()}`, 380, y + 8);
+        doc.text(`${data.currency || '$'} ${(Number(item.qty || 1) * Number(item.price || item.rate || 0)).toLocaleString()}`, 480, y + 8);
         i++;
     });
-
 
     const subtotalY = tableTop + 25 + (i * 25) + 30;
     doc.rect(350, subtotalY, 200, 35).fill('#4177BC');
@@ -71,6 +57,8 @@ const generateGenieInvoicePDF = (data, stream) => {
     doc.text(`${data.currency || '$'} ${Number(data.grandTotal).toLocaleString()}`, 450, subtotalY + 12, { align: 'right', width: 90 });
 
     doc.fontSize(8).fillColor('#94A3B8').text('Thank you for choosing Genie Hack. This is a computer-generated invoice.', 50, 780, { align: 'center', width: 500 });
+    
+    // Finalize PDF
     doc.end();
 };
 
@@ -140,56 +128,66 @@ router.get('/:id', async (req, res) => {
     } catch (err) { res.status(500).send({ error: "Internal error" }); }
 });
 
-/** 4️⃣ SEND EMAIL (Professional PDF Attachment) **/
-router.post('/send-email', upload.single('pdf'), async (req, res) => {
+/** 4️⃣ SEND EMAIL (Fixed Professional PDF Attachment) **/
+router.post('/send-email', async (req, res) => {
     try {
         const database = await connectDB();
         const invColl = database.collection("invoices");
         const userColl = database.collection("users");
         const settingsColl = database.collection("settings");
+        const inv = req.body;
 
-        const inv = req.file ? JSON.parse(req.body.invoiceData) : req.body;
+        if (!inv.clientEmail) return res.status(400).json({ error: "Client email is missing" });
 
-
+        // PayPal Link Logic
         const siteSettings = await settingsColl.findOne({});
         const userProvidedLink = siteSettings?.paypalLink || inv.paypalEmail || process.env.PAYPAL_EMAIL || "";
         let finalPaymentLink = userProvidedLink;
-
         if (userProvidedLink.includes('@')) {
             finalPaymentLink = `https://www.paypal.com/cgi-bin/webscr?cmd=_xclick&business=${userProvidedLink}&amount=${inv.remainingDue}&currency_code=${inv.currency}&item_name=Invoice_${inv.invoiceId}`;
         }
 
-        // PDF তৈরি
+        // PDF Generation via Buffers (Fixes dest.write error)
         const doc = new PDFDocument({ size: 'A4', margin: 50 });
         let buffers = [];
-        doc.on('data', buffers.push.bind(buffers));
+        doc.on('data', (chunk) => buffers.push(chunk));
         doc.on('end', async () => {
             const pdfBuffer = Buffer.concat(buffers);
+            const transporter = nodemailer.createTransport({
+                service: 'gmail',
+                auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
+            });
 
             await transporter.sendMail({
                 from: `"Genie Hack Billing" <${process.env.EMAIL_USER}>`,
                 to: inv.clientEmail,
                 subject: `Invoice #${inv.invoiceId} from Genie Hack`,
-                html: `<div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #eee; padding: 20px; border-radius: 10px;">
-                        <h2 style="color: #4177BC;">Hello ${inv.clientName},</h2>
-                        <p>Your invoice <b>#${inv.invoiceId}</b> from <b>Genie Hack</b> is ready.</p>
-                        <p>Total Amount: <b>${inv.currency} ${inv.grandTotal}</b></p>
-                        <a href="${finalPaymentLink}" style="background:#4177BC; color:white; padding:10px 20px; text-decoration:none; border-radius:5px;">Pay Now</a>
-                        <p>Regards,<br/><b>Genie Hack Team</b></p>
+                html: `<div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #eee; padding: 30px; border-radius: 15px;">
+                        <h2 style="color: #4177BC; text-align: center;">Genie Hack Billing</h2>
+                        <p>Hello <b>${inv.clientName}</b>,</p>
+                        <p>Your invoice <b>#${inv.invoiceId}</b> is ready.</p>
+                        <div style="background: #f8fafc; padding: 20px; border-radius: 10px;">
+                            <p>Total Amount: <b>${inv.currency} ${inv.grandTotal}</b></p>
+                            <p>Status: <span style="color: #f59e0b;">${inv.status}</span></p>
+                        </div>
+                        <div style="text-align: center; margin: 30px 0;">
+                            <a href="${finalPaymentLink}" style="background:#4177BC; color:white; padding:15px 30px; text-decoration:none; border-radius:8px; font-weight: bold;">Pay via PayPal</a>
+                        </div>
+                        <p style="font-size: 12px; color: #999;">Find the official PDF attached.</p>
                       </div>`,
                 attachments: [{ filename: `Invoice_${inv.invoiceId}.pdf`, content: pdfBuffer }]
             });
 
-            // Status Update
+            // Global Sync
             await invColl.updateOne({ invoiceId: inv.invoiceId }, { $set: { status: "Sent", updatedAt: new Date() } });
             await userColl.updateOne({ email: inv.adminEmail, "myCreatedInvoices.invoiceId": inv.invoiceId }, { $set: { "myCreatedInvoices.$.status": "Sent" } });
             await userColl.updateOne({ email: inv.clientEmail, "invoicesReceived.invoiceId": inv.invoiceId }, { $set: { "invoicesReceived.$.status": "Sent" } });
 
-            res.status(200).json({ success: true, message: "✅ Email Sent with Genie Hack Styling!" });
+            res.status(200).json({ success: true, message: "✅ Email Sent and Database Synced!" });
         });
 
         generateGenieInvoicePDF(inv, doc);
-    } catch (err) { res.status(500).json({ error: "Failed to send email" }); }
+    } catch (err) { res.status(500).json({ error: "Master Error during email processing" }); }
 });
 
 /** 5️⃣ DOWNLOAD PDF **/
@@ -200,9 +198,12 @@ router.get('/:id/download', async (req, res) => {
         const inv = await database.collection("invoices").findOne(query);
         if (!inv) return res.status(404).send({ error: "Invoice not found" });
 
+        const doc = new PDFDocument({ size: 'A4', margin: 50 });
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `attachment; filename=Invoice-${inv.invoiceId}.pdf`);
-        generateGenieInvoicePDF(inv, res);
+        
+        doc.pipe(res);
+        generateGenieInvoicePDF(inv, doc);
     } catch (err) { res.status(500).send({ error: "PDF Generation error" }); }
 });
 
@@ -213,10 +214,9 @@ router.patch('/:id', async (req, res) => {
         const invoiceColl = database.collection("invoices");
         const userColl = database.collection("users");
         const invoiceObjectId = ObjectId.isValid(req.params.id) ? new ObjectId(req.params.id) : null;
-
         const { _id, createdAt, ...updateFields } = req.body;
-        await invoiceColl.updateOne({ _id: invoiceObjectId }, { $set: { ...updateFields, updatedAt: new Date() } });
 
+        await invoiceColl.updateOne({ _id: invoiceObjectId }, { $set: { ...updateFields, updatedAt: new Date() } });
         const updated = await invoiceColl.findOne({ _id: invoiceObjectId });
         if (updated) {
             await userColl.updateOne({ email: updated.adminEmail, "myCreatedInvoices._id": updated._id }, { $set: { "myCreatedInvoices.$.status": updated.status, "myCreatedInvoices.$.grandTotal": updated.grandTotal, "myCreatedInvoices.$.projectTitle": updated.projectTitle } });
@@ -248,7 +248,6 @@ router.post('/bulk-delete', async (req, res) => {
         const database = await connectDB();
         const invoiceColl = database.collection("invoices");
         const userColl = database.collection("users");
-
         const objectIds = ids.map(id => new ObjectId(id));
         const invoicesToDelete = await invoiceColl.find({ _id: { $in: objectIds } }).toArray();
 
@@ -261,13 +260,13 @@ router.post('/bulk-delete', async (req, res) => {
     } catch (err) { res.status(500).send({ error: "Bulk delete failed" }); }
 });
 
-/** 🔄 UPDATE STATUS & MILESTONE AUTO-SYNC **/
+/** 🔄 UPDATE STATUS & MILESTONE AUTO-SYNC (Typo Fix: clinets -> clients) **/
 router.put('/update-status/:invoiceId', async (req, res) => {
     try {
         const { status } = req.body;
         const database = await connectDB();
         const invoiceColl = database.collection("invoices");
-        const clientColl = database.collection("clinets");
+        const clientColl = database.collection("clients"); // Fixed typo
         const userColl = database.collection("users");
 
         const currentInvoice = await invoiceColl.findOneAndUpdate(
@@ -278,10 +277,8 @@ router.put('/update-status/:invoiceId', async (req, res) => {
 
         if (!currentInvoice) return res.status(404).send({ error: "Invoice not found" });
 
-
         await userColl.updateOne({ email: currentInvoice.adminEmail, "myCreatedInvoices.invoiceId": currentInvoice.invoiceId }, { $set: { "myCreatedInvoices.$.status": status } });
         await userColl.updateOne({ email: currentInvoice.clientEmail, "invoicesReceived.invoiceId": currentInvoice.invoiceId }, { $set: { "invoicesReceived.$.status": status } });
-
 
         if (status === "Paid" && currentInvoice.projectId) {
             const projId = new ObjectId(currentInvoice.projectId);
@@ -324,28 +321,22 @@ router.put('/update-status/:invoiceId', async (req, res) => {
 /** 💳 PROCESS FINAL PAYMENT **/
 router.post('/process-final-payment', async (req, res) => {
     try {
-        const { clientId, projectId, milestoneId, invoiceId, paymentAmount, paymentMethod } = req.body;
+        const { clientId, projectId, milestoneId, invoiceId, paymentAmount } = req.body;
         const database = await connectDB();
         const invoiceColl = database.collection("invoices");
 
-        const updatedInvoice = await invoiceColl.findOneAndUpdate(
+        await invoiceColl.findOneAndUpdate(
             { invoiceId: invoiceId },
-            { $set: { status: 'Paid', receivedAmount: paymentAmount, remainingDue: 0, updatedAt: new Date() } },
-            { returnDocument: 'after' }
+            { $set: { status: 'Paid', receivedAmount: paymentAmount, remainingDue: 0, updatedAt: new Date() } }
         );
 
-        if (!updatedInvoice) return res.status(404).json({ error: "Invoice not found" });
-
-        await database.collection("clinets").updateOne(
+        await database.collection("clients").updateOne( // Fixed typo
             { _id: new ObjectId(clientId) },
             {
-                $set: {
-                    "projects.$[proj].milestones.$[mile].status": "Paid",
-                    "projects.$[proj].milestones.$[mile].isCompleted": true
-                },
+                $set: { "projects.$[proj].milestones.$[mile].status": "Paid", "projects.$[proj].milestones.$[mile].isCompleted": true },
                 $inc: { totalPaid: Number(paymentAmount) }
             },
-            { arrayFilters: [{ "proj._id": projectId }, { "mile._id": milestoneId }] }
+            { arrayFilters: [{ "proj._id": new ObjectId(projectId) }, { "mile._id": new ObjectId(milestoneId) }] }
         );
 
         res.json({ success: true, message: "Final Payment Processed Successfully!" });
