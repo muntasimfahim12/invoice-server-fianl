@@ -5,7 +5,7 @@ require('dotenv').config();
 // Routes Import
 const authRoutes = require('./routes/authRoutes');
 const clientRoutes = require('./routes/clientRoutes');
-const invoiceRoutes = require('./routes/invoiceRoutes');
+const { router: invoiceRoutes } = require('./routes/invoiceRoutes'); 
 const generalRoutes = require('./routes/generalRoutes');
 const userRoutes = require('./routes/userRoutes');
 

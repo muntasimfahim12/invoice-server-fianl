@@ -8,79 +8,150 @@ const { connectDB } = require('../config/db');
 
 const upload = multer({ storage: multer.memoryStorage() });
 
-/** 🛠️ HELPER: PDF Generator (Fixed Logic) **/
 const generateGenieInvoicePDF = (data, doc) => {
-    // Styling & Header
-    doc.fillColor('#0F172A').fontSize(22).text('GENIE HACK', 50, 50, { stroke: true });
-    doc.fontSize(10).fillColor('#64748B').text('Cyber Security & Digital Solutions', 50, 75);
+    // --- 🎨 PDF CONFIGURATION ---
+    const primaryColor = '#4177BC';
+    const secondaryColor = '#0F172A';
+    const textColor = '#1E293B';
+    const lightGray = '#F8FAFC';
+    const borderColor = '#E2E8F0';
 
-    doc.fillColor('#4177BC').fontSize(28).text('INVOICE', 400, 45, { align: 'right' });
-    doc.fontSize(10).fillColor('#000').text(`ID: #${data.invoiceId}`, 400, 80, { align: 'right' });
-    doc.text(`Date: ${new Date(data.createdAt || Date.now()).toLocaleDateString()}`, 400, 95, { align: 'right' });
+    // --- 🏢 HEADER & BRANDING ---
+    // Brand Logo/Name
+    doc.fillColor(primaryColor).fontSize(24).font('Helvetica-Bold').text('GENIE HACK', 50, 45);
+    doc.fontSize(9).font('Helvetica').fillColor('#64748B').text('Cyber Security & Digital Solutions', 50, 72);
 
-    doc.moveTo(50, 120).lineTo(550, 120).lineWidth(2).strokeColor('#4177BC').stroke();
+    // Invoice Label & Details (Right Aligned)
+    doc.fillColor(primaryColor).fontSize(28).font('Helvetica-Bold').text('INVOICE', 400, 40, { align: 'right' });
+    doc.fontSize(10).fillColor(secondaryColor).font('Helvetica-Bold').text(`Invoice ID: #${data.invoiceId}`, 400, 75, { align: 'right' });
+    doc.font('Helvetica').fillColor('#64748B').text(`Date: ${new Date(data.createdAt || Date.now()).toLocaleDateString('en-GB')}`, 400, 90, { align: 'right' });
 
-    doc.moveDown(2);
-    const topOfInfo = 140;
+    // Top Divider Line
+    doc.moveTo(50, 115).lineTo(545, 115).lineWidth(1.5).strokeColor(primaryColor).stroke();
 
-    doc.fillColor('#4177BC').fontSize(10).text('FROM:', 50, topOfInfo);
-    doc.fillColor('#000').fontSize(11).font('Helvetica-Bold').text('Genie Hack Ltd.', 50, topOfInfo + 15);
-    doc.fontSize(9).font('Helvetica').fillColor('#64748B').text(data.freelancerAddress || 'Dhaka, Bangladesh', 50, topOfInfo + 30);
+    // --- 👥 BILLING INFORMATION ---
+    const topOfInfo = 135;
 
-    doc.fillColor('#4177BC').fontSize(10).text('BILL TO:', 350, topOfInfo);
-    doc.fillColor('#000').fontSize(11).font('Helvetica-Bold').text(data.clientName, 350, topOfInfo + 15);
-    doc.fontSize(9).font('Helvetica').fillColor('#64748B').text(data.clientEmail, 350, topOfInfo + 30);
+    // From Section
+    doc.fillColor(primaryColor).fontSize(9).font('Helvetica-Bold').text('FROM:', 50, topOfInfo);
+    doc.fillColor(secondaryColor).fontSize(11).text('Genie Hack Ltd.', 50, topOfInfo + 15);
+    doc.fontSize(9).font('Helvetica').fillColor('#64748B').text('Dhaka, Bangladesh', 50, topOfInfo + 30);
+    doc.text('support@geniehack.com', 50, topOfInfo + 42);
 
-    // Items Table
+    // Bill To Section
+    doc.fillColor(primaryColor).fontSize(9).font('Helvetica-Bold').text('BILL TO:', 350, topOfInfo);
+    doc.fillColor(secondaryColor).fontSize(11).text(data.clientName || 'Valued Client', 350, topOfInfo + 15);
+    doc.fontSize(9).font('Helvetica').fillColor('#64748B').text(data.clientEmail || '', 350, topOfInfo + 30);
+    doc.text(`Project: ${data.projectTitle || 'N/A'}`, 350, topOfInfo + 42);
+
+    // --- 📊 MILESTONE ITEMS TABLE ---
     const tableTop = 230;
-    doc.rect(50, tableTop, 500, 25).fill('#4177BC');
-    doc.fillColor('#FFF').fontSize(10).text('Description', 60, tableTop + 8);
-    doc.text('Qty', 300, tableTop + 8);
-    doc.text('Price', 380, tableTop + 8);
-    doc.text('Total', 480, tableTop + 8);
+
+    // Header Background
+    doc.rect(50, tableTop, 500, 25).fill(primaryColor);
+
+    // Header Text
+    doc.fillColor('#FFFFFF').fontSize(10).font('Helvetica-Bold');
+    doc.text('Milestone Description', 60, tableTop + 8);
+    doc.text('Due Date', 280, tableTop + 8);
+    doc.text('Status', 380, tableTop + 8);
+    doc.text('Amount', 480, tableTop + 8);
 
     let i = 0;
-    const items = data.items || [{ name: data.projectTitle, qty: 1, price: data.grandTotal }];
+    // data.milestonesSnapshot থেকে ডাটা নিয়ে লুপ ঘুরবে
+    const items = data.milestonesSnapshot || [{ name: data.projectTitle, amount: data.grandTotal, status: data.status, dueDate: null }];
+
     items.forEach((item, index) => {
         const y = tableTop + 25 + (index * 25);
-        if (index % 2 === 0) doc.rect(50, y, 500, 25).fill('#F8FAFC');
-        doc.fillColor('#000').font('Helvetica').text(item.name || "Service", 60, y + 8);
-        doc.text((item.qty || 1).toString(), 300, y + 8);
-        doc.text(`${data.currency || '$'} ${Number(item.price || item.rate || 0).toLocaleString()}`, 380, y + 8);
-        doc.text(`${data.currency || '$'} ${(Number(item.qty || 1) * Number(item.price || item.rate || 0)).toLocaleString()}`, 480, y + 8);
+
+        // Alternate Row Background
+        if (index % 2 === 0) doc.rect(50, y, 500, 25).fill(lightGray);
+
+        doc.fillColor(textColor).fontSize(9).font('Helvetica');
+
+        // Description
+        doc.text(item.name || 'Service Component', 60, y + 8, { width: 210, lineBreak: false });
+
+        // Due Date
+        doc.text(item.dueDate ? new Date(item.dueDate).toLocaleDateString('en-GB') : '---', 280, y + 8);
+
+        // Status with Color Coding
+        const isPaid = item.status?.toLowerCase() === 'paid';
+        doc.fillColor(isPaid ? '#10B981' : '#F59E0B').font('Helvetica-Bold');
+        doc.text(item.status ? item.status.toUpperCase() : 'PENDING', 380, y + 8);
+
+        // Amount
+        doc.fillColor(secondaryColor).font('Helvetica');
+        doc.text(`${data.currency || '$'} ${Number(item.amount || 0).toLocaleString()}`, 480, y + 8);
+
         i++;
     });
 
+    // --- 💰 TOTALS SECTION ---
     const subtotalY = tableTop + 25 + (i * 25) + 30;
-    doc.rect(350, subtotalY, 200, 35).fill('#4177BC');
-    doc.fillColor('#FFF').fontSize(12).font('Helvetica-Bold').text('GRAND TOTAL', 360, subtotalY + 12);
-    doc.text(`${data.currency || '$'} ${Number(data.grandTotal).toLocaleString()}`, 450, subtotalY + 12, { align: 'right', width: 90 });
 
-    doc.fontSize(8).fillColor('#94A3B8').text('Thank you for choosing Genie Hack. This is a computer-generated invoice.', 50, 780, { align: 'center', width: 500 });
-    
+    // Grand Total Box
+    doc.rect(345, subtotalY, 205, 40).fill(primaryColor);
+    doc.fillColor('#FFFFFF').fontSize(12).font('Helvetica-Bold').text('AMOUNT PAID', 355, subtotalY + 14);
+    doc.fontSize(14).text(`${data.currency || '$'} ${Number(data.grandTotal).toLocaleString()}`, 450, subtotalY + 13, { align: 'right', width: 90 });
+
+    // Payment Method Information
+    doc.fillColor(secondaryColor).fontSize(9).font('Helvetica-Bold').text('Payment Method:', 50, subtotalY);
+    doc.font('Helvetica').fillColor('#64748B').text(data.paymentMethod || 'Manual Transaction', 50, subtotalY + 15);
+
+    // --- 📝 FOOTER ---
+    const footerTop = 750;
+    doc.moveTo(50, footerTop).lineTo(545, footerTop).lineWidth(0.5).strokeColor(borderColor).stroke();
+
+    doc.fontSize(8).fillColor('#94A3B8').text('This is an automated invoice generated by Genie Hack Ltd.', 50, footerTop + 15, { align: 'center', width: 500 });
+    doc.text('Thank you for your business!', 50, footerTop + 27, { align: 'center', width: 500 });
+
     // Finalize PDF
     doc.end();
 };
 
-/** 1️⃣ GET INVOICES **/
+/** 1️⃣ GET INVOICES (Optimized for Client Ledger & Admin) **/
 router.get('/', async (req, res) => {
     try {
-        const { search, status, email, role } = req.query;
-        if (!email) return res.status(400).send({ error: "Email is required" });
+        const { search, status, email, clientEmail, role } = req.query;
+        const targetEmail = (email || clientEmail)?.toLowerCase().trim();
+
+        if (!targetEmail) {
+            return res.status(400).send({ error: "Email is required to fetch invoices" });
+        }
+
         const database = await connectDB();
         const collection = database.collection("invoices");
-        let query = role === 'admin' ? { adminEmail: email.toLowerCase() } : { clientEmail: email.toLowerCase() };
+        let query = role === 'admin' 
+            ? { adminEmail: targetEmail } 
+            : { clientEmail: targetEmail };
+
         if (search) {
-            query.$or = [
-                { invoiceId: { $regex: search, $options: 'i' } },
-                { clientName: { $regex: search, $options: 'i' } },
-                { projectTitle: { $regex: search, $options: 'i' } }
+            query.$and = [
+                { ...query }, 
+                {
+                    $or: [
+                        { invoiceId: { $regex: search, $options: 'i' } },
+                        { clientName: { $regex: search, $options: 'i' } },
+                        { projectTitle: { $regex: search, $options: 'i' } }
+                    ]
+                }
             ];
         }
-        if (status && status !== 'All') query.status = status;
-        const invoices = await collection.find(query).sort({ createdAt: -1 }).toArray();
+
+        if (status && status !== 'All') {
+            query.status = status;
+        }
+        const invoices = await collection
+            .find(query)
+            .sort({ createdAt: -1 })
+            .toArray();
+
         res.status(200).send(invoices);
-    } catch (err) { res.status(500).send({ error: "Failed to fetch invoices" }); }
+    } catch (err) {
+        console.error("Invoice Fetch Error:", err);
+        res.status(500).send({ error: "Failed to fetch invoices from database" });
+    }
 });
 
 /** 2️⃣ CREATE INVOICE (With Global Dashboard Sync) **/
@@ -92,12 +163,23 @@ router.post('/', async (req, res) => {
         const { adminEmail, clientEmail, ...rest } = req.body;
 
         const invoiceData = {
-            ...rest,
-            adminEmail: adminEmail.toLowerCase(),
-            clientEmail: clientEmail.toLowerCase(),
-            createdAt: new Date(),
-            updatedAt: new Date(),
-            status: req.body.status || "Unpaid"
+            invoiceId: `INV-${Date.now().toString().slice(-6)}`,
+            projectId: projectId,
+            milestoneId: milestone._id || `M-${milestoneIndex}`,
+            projectTitle: project.name,
+            clientName: client.name,
+            clientEmail: client.email.toLowerCase().trim(),
+
+            grandTotal: Number(milestone.amount),
+            remainingDue: 0,
+            receivedAmount: Number(milestone.amount),
+
+            amount: Number(milestone.amount),
+            method: paymentMethod || "Online Payment",
+            status: "Paid",
+            paymentDate: new Date(),
+            milestonesSnapshot: project.milestones, 
+            createdAt: new Date()
         };
 
         const result = await invoiceCollection.insertOne(invoiceData);
@@ -201,7 +283,7 @@ router.get('/:id/download', async (req, res) => {
         const doc = new PDFDocument({ size: 'A4', margin: 50 });
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `attachment; filename=Invoice-${inv.invoiceId}.pdf`);
-        
+
         doc.pipe(res);
         generateGenieInvoicePDF(inv, doc);
     } catch (err) { res.status(500).send({ error: "PDF Generation error" }); }
@@ -343,4 +425,4 @@ router.post('/process-final-payment', async (req, res) => {
     } catch (err) { res.status(500).json({ error: "Final integration failed" }); }
 });
 
-module.exports = router;
+module.exports = { router, generateGenieInvoicePDF };

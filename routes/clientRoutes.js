@@ -199,21 +199,19 @@ router.delete('/:id', async (req, res) => {
     }
 });
 
-/** 🚀 MASTER ROUTE: DEPLOY PROJECT & AUTO-INVOICE **/
+/** 🚀 MASTER ROUTE: DEPLOY PROJECT (EMAIL ONLY, NO INVOICE) **/
 router.post('/deploy-project', async (req, res) => {
     try {
         const database = await connectDB();
         const clientColl = database.collection("clinets");
-        const invoiceColl = database.collection("invoices");
-        const userColl = database.collection("users");
 
-        const { clientId, title, totalBudget, milestones, paymentType, description } = req.body;
+        const { clientId, title, totalBudget, milestones, description } = req.body;
 
         const projectId = new ObjectId();
         const formattedMilestones = (milestones || []).map(m => ({
             ...m,
             _id: m._id || new ObjectId().toString(),
-            status: m.status || "pending"
+            status: m.status || "Unpaid"
         }));
 
         const newProject = {
@@ -227,6 +225,7 @@ router.post('/deploy-project', async (req, res) => {
             createdAt: new Date()
         };
 
+        // ১. ডাটাবেসে শুধু প্রজেক্ট আপডেট করা (ইনভয়েস কালেকশনে কিছু যাবে না)
         const clientUpdate = await clientColl.updateOne(
             { _id: new ObjectId(clientId) },
             { $push: { projects: newProject } }
@@ -235,53 +234,72 @@ router.post('/deploy-project', async (req, res) => {
         if (clientUpdate.matchedCount === 0) return res.status(404).json({ error: "Client not found" });
 
         const client = await clientColl.findOne({ _id: new ObjectId(clientId) });
-        const firstMilestone = (formattedMilestones.length > 0) ? formattedMilestones[0] : null;
-        const invoiceAmount = paymentType === "Full Payment" ? Number(totalBudget) : Number(firstMilestone?.amount || 0);
 
-        const invoiceData = {
-            invoiceId: `INV-${Date.now().toString().slice(-6)}`,
-            projectId: projectId.toString(),
-            projectTitle: title,
-            clientName: client.name,
-            clientEmail: client.email,
-            adminEmail: process.env.EMAIL_USER,
-            grandTotal: invoiceAmount,
-            remainingDue: invoiceAmount,
-            status: "Unpaid",
-            createdAt: new Date(),
-            items: [{ name: firstMilestone?.name || "Initial Milestone", qty: 1, price: invoiceAmount }]
-        };
+        // ২. মাইলস্টোন লিস্ট তৈরি করা ইমেইলের জন্য
+        const milestoneRows = formattedMilestones.map((m, index) => `
+            <tr>
+                <td style="padding: 10px; border-bottom: 1px solid #eee;">${index + 1}. ${m.name}</td>
+                <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: right; font-weight: bold;">$${Number(m.amount).toLocaleString()}</td>
+            </tr>
+        `).join('');
 
-        const invResult = await invoiceColl.insertOne(invoiceData);
-        const summary = { _id: invResult.insertedId, invoiceId: invoiceData.invoiceId, status: "Unpaid", grandTotal: invoiceAmount, projectTitle: title };
-
-        await userColl.updateOne({ email: client.email }, { $push: { invoicesReceived: summary } });
-        await userColl.updateOne({ role: "admin" }, { $push: { myCreatedInvoices: summary } });
-
+        // ৩. প্রফেশনাল ইমেইল টেমপ্লেট
         const emailHtml = `
-            <div style="font-family: sans-serif; max-width: 600px; border: 1px solid #eee; border-radius: 12px; overflow: hidden;">
-                <div style="background-color: #4177BC; padding: 20px; color: white; text-align: center;"><h2>Project Started: ${title}</h2></div>
-                <div style="padding: 20px;">
-                    <p>Hello <b>${client.name}</b>,</p>
-                    <p>Your new project has been initiated and the first invoice is ready.</p>
-                    <div style="background: #f9f9f9; padding: 15px; border-radius: 8px; margin: 20px 0;">
-                        <p><b>Amount Due:</b> USD ${invoiceAmount.toLocaleString()}</p>
-                        <p><b>Invoice ID:</b> ${invoiceData.invoiceId}</p>
+            <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #e0e0e0; border-radius: 12px; overflow: hidden; color: #333;">
+                <div style="background-color: #4177BC; padding: 30px; color: white; text-align: center;">
+                    <h1 style="margin: 0; font-size: 24px;">Project Initiated!</h1>
+                    <p style="opacity: 0.9;">We are excited to work with you on <b>${title}</b></p>
+                </div>
+                <div style="padding: 30px; background-color: #ffffff;">
+                    <p style="font-size: 16px;">Hello <b>${client.name}</b>,</p>
+                    <p>Your new project has been successfully set up in our system. Below are the project details and the planned milestones:</p>
+                    
+                    <div style="background: #f8fafc; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                        <p style="margin: 5px 0;"><b>Project Name:</b> ${title}</p>
+                        <p style="margin: 5px 0;"><b>Total Budget:</b> $${Number(totalBudget).toLocaleString()}</p>
+                        <p style="margin: 5px 0;"><b>Description:</b> ${description || "N/A"}</p>
                     </div>
-                    <a href="${process.env.FRONTEND_URL}/login" style="display: inline-block; background: #4177BC; color: white; padding: 12px 25px; text-decoration: none; border-radius: 8px;">View Dashboard & Pay</a>
+
+                    <h3 style="color: #4177BC; border-bottom: 2px solid #f0f0f0; padding-bottom: 8px;">Project Milestones</h3>
+                    <table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
+                        <thead>
+                            <tr style="background: #f4f4f4; text-align: left;">
+                                <th style="padding: 10px;">Milestone Name</th>
+                                <th style="padding: 10px; text-align: right;">Amount</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${milestoneRows}
+                        </tbody>
+                    </table>
+
+                    <div style="margin-top: 30px; text-align: center;">
+                        <a href="${process.env.FRONTEND_URL}/login" style="background-color: #4177BC; color: white; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">Access Client Dashboard</a>
+                    </div>
+                </div>
+                <div style="background: #f9f9f9; padding: 20px; text-align: center; font-size: 12px; color: #777;">
+                    <p>This is an automated project notification. If you have any questions, please contact your project manager.</p>
+                    <p>&copy; ${new Date().getFullYear()} Vault LedgerPRO Team</p>
                 </div>
             </div>`;
 
+        // ৪. ইমেইল পাঠানো
         await transporter.sendMail({
             from: `"Vault System" <${process.env.EMAIL_USER}>`,
             to: client.email,
-            subject: `New Project & Invoice: ${title}`,
+            subject: `🚀 Project Launched: ${title}`,
             html: emailHtml
         });
 
-        res.status(201).json({ success: true, message: "🚀 Deployed & Invoice Sent!", projectId });
+        res.status(201).json({
+            success: true,
+            message: "🚀 Project Deployed & Professional Email Sent!",
+            projectId
+        });
+
     } catch (err) {
-        res.status(500).json({ error: "Deployment failure" });
+        console.error("Deployment failure:", err);
+        res.status(500).json({ error: "Failed to deploy project" });
     }
 });
 
