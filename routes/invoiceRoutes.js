@@ -110,47 +110,58 @@ const generateGenieInvoicePDF = (data, doc) => {
     doc.end();
 };
 
-/** 1️⃣ GET INVOICES (Optimized for Client Ledger & Admin) **/
+/** 1️⃣ GET INVOICES (Master Fetch: Admin sees all, Client sees only theirs) **/
 router.get('/', async (req, res) => {
     try {
         const { search, status, email, clientEmail, role } = req.query;
-        const targetEmail = (email || clientEmail)?.toLowerCase().trim();
-
-        if (!targetEmail) {
-            return res.status(400).send({ error: "Email is required to fetch invoices" });
-        }
 
         const database = await connectDB();
         const collection = database.collection("invoices");
-        let query = role === 'admin' 
-            ? { adminEmail: targetEmail } 
-            : { clientEmail: targetEmail };
 
+        let query = {};
+
+        // --- 🛡️ ACCESS CONTROL LOGIC ---
+        if (role === 'admin') {
+            query = {};
+        } else {
+            const targetEmail = (email || clientEmail)?.toLowerCase().trim();
+            if (!targetEmail) {
+                return res.status(400).send({ error: "Client email is required to fetch records" });
+            }
+            query = { clientEmail: targetEmail };
+        }
+
+        // --- 🔍 SEARCH LOGIC ---
         if (search) {
             query.$and = [
-                { ...query }, 
+                { ...query },
                 {
                     $or: [
                         { invoiceId: { $regex: search, $options: 'i' } },
                         { clientName: { $regex: search, $options: 'i' } },
-                        { projectTitle: { $regex: search, $options: 'i' } }
+                        { projectTitle: { $regex: search, $options: 'i' } },
+                        { clientEmail: { $regex: search, $options: 'i' } }
                     ]
                 }
             ];
         }
 
+        // --- 🏷️ STATUS FILTER ---
         if (status && status !== 'All') {
             query.status = status;
         }
+
+        // --- 🚀 DATABASE EXECUTION ---
         const invoices = await collection
             .find(query)
             .sort({ createdAt: -1 })
             .toArray();
 
         res.status(200).send(invoices);
+
     } catch (err) {
-        console.error("Invoice Fetch Error:", err);
-        res.status(500).send({ error: "Failed to fetch invoices from database" });
+        console.error("Critical Invoice Fetch Error:", err);
+        res.status(500).send({ error: "Internal Server Error while fetching ledger" });
     }
 });
 
@@ -178,7 +189,7 @@ router.post('/', async (req, res) => {
             method: paymentMethod || "Online Payment",
             status: "Paid",
             paymentDate: new Date(),
-            milestonesSnapshot: project.milestones, 
+            milestonesSnapshot: project.milestones,
             createdAt: new Date()
         };
 
@@ -425,4 +436,31 @@ router.post('/process-final-payment', async (req, res) => {
     } catch (err) { res.status(500).json({ error: "Final integration failed" }); }
 });
 
-module.exports = { router, generateGenieInvoicePDF };
+/** 9️⃣ DOWNLOAD PDF (Improved & Integrated) **/
+router.get('/download/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const database = await connectDB();
+        const collection = database.collection("invoices");
+
+        const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { invoiceId: id };
+        const inv = await collection.findOne(query);
+
+        if (!inv) return res.status(404).send({ error: "Invoice not found" });
+
+        // PDF Response Headers
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename=Invoice-${inv.invoiceId}.pdf`);
+
+        const doc = new PDFDocument({ size: 'A4', margin: 50 });
+        doc.pipe(res);
+
+        generateGenieInvoicePDF(inv, doc);
+
+    } catch (err) {
+        console.error("PDF Download Error:", err);
+        res.status(500).send("Failed to generate PDF");
+    }
+});
+
+module.exports = { router, generateGenieInvoicePDF }; 

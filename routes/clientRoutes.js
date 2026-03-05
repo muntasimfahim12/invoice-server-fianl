@@ -72,7 +72,6 @@ router.post('/', async (req, res) => {
                 description: p.description || "",
                 type: p.type || "full",
                 status: p.status || "Active",
-                // মাইলস্টোন আইডি জেনারেট নিশ্চিত করা
                 milestones: (p.milestones || []).map(m => ({
                     ...m,
                     _id: m._id || new ObjectId().toString(),
@@ -225,7 +224,6 @@ router.post('/deploy-project', async (req, res) => {
             createdAt: new Date()
         };
 
-        // ১. ডাটাবেসে শুধু প্রজেক্ট আপডেট করা (ইনভয়েস কালেকশনে কিছু যাবে না)
         const clientUpdate = await clientColl.updateOne(
             { _id: new ObjectId(clientId) },
             { $push: { projects: newProject } }
@@ -370,7 +368,6 @@ router.put('/:id/payment', async (req, res) => {
         const database = await connectDB();
         const clientColl = database.collection("clinets");
 
-        // আপডেট লজিক: Array Filters ব্যবহার করে নেস্টেড মাইলস্টোন আপডেট
         const result = await clientColl.updateOne(
             { _id: new ObjectId(id) },
             {

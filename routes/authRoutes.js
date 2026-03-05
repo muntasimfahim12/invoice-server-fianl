@@ -19,18 +19,24 @@ const transporter = nodemailer.createTransport({
 /* --- HELPERS --- */
 const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
 
-
 const getAuthContext = (role, email) => {
   const cleanEmail = email ? email.trim().toLowerCase() : "";
   const collectionName = role === "admin" ? "users" : "clinets";
-  const filter = role === "admin" ? { email: cleanEmail } : { portalEmail: cleanEmail };
+
+  // ক্লায়েন্টের ক্ষেত্রে portalEmail অথবা email—যে কোনো একটি মিললেই হবে
+  const filter = role === "admin"
+    ? { email: cleanEmail }
+    : { $or: [{ portalEmail: cleanEmail }, { email: cleanEmail }] };
+
   return { collectionName, filter, cleanEmail };
 };
 
-/* --- LOGIN ROUTE --- */
+/* --- LOGIN ROUTE (FIXED & DEBUGGED) --- */
 router.post('/login', async (req, res) => {
   try {
     const { email, password, role } = req.body;
+    console.log(`Login attempt: ${email} as ${role}`); // Debug 1
+
     if (!email || !password || !role) {
       return res.status(400).json({ error: "Please provide all credentials." });
     }
@@ -38,10 +44,18 @@ router.post('/login', async (req, res) => {
     const database = await connectDB();
     const { collectionName, filter } = getAuthContext(role, email);
 
-    const user = await database.collection(collectionName).findOne(filter);
-    if (!user) return res.status(404).json({ error: "No account found." });
+    console.log(`Searching in ${collectionName} with filter:`, JSON.stringify(filter)); // Debug 2
 
-    // পাসওয়ার্ড চেক: হ্যাশ করা থাকলে Bcrypt ব্যবহার করবে, নাহলে ডাইরেক্ট চেক (Plain text compatibility)
+    const user = await database.collection(collectionName).findOne(filter);
+
+    if (!user) {
+      console.log("No user found in database."); // Debug 3
+      return res.status(404).json({ error: "No account found." });
+    }
+
+    console.log("User found, checking password..."); // Debug 4
+
+    // পাসওয়ার্ড চেক
     const inputPassword = password.toString().trim();
     let isMatch = false;
 
@@ -51,7 +65,10 @@ router.post('/login', async (req, res) => {
       isMatch = inputPassword === (user.password ? user.password.toString().trim() : "");
     }
 
-    if (!isMatch) return res.status(401).json({ error: "Invalid password." });
+    if (!isMatch) {
+      console.log("Password did not match."); // Debug 5
+      return res.status(401).json({ error: "Invalid password." });
+    }
 
     const token = jwt.sign(
       { id: user._id, role, email: email.toLowerCase() },
@@ -59,15 +76,18 @@ router.post('/login', async (req, res) => {
       { expiresIn: "7d" }
     );
 
+    console.log("Login successful, sending response..."); // Debug 6
+
     res.status(200).json({
       token,
       role,
       id: user._id,
       name: user.name || user.companyName || "User",
-      email: role === "admin" ? user.email : user.portalEmail
+      email: user.email || user.portalEmail || email
     });
 
   } catch (err) {
+    console.error("CRITICAL LOGIN ERROR:", err); // এটি আপনার টার্মিনালে আসল এরর দেখাবে
     res.status(500).json({ error: "Server error during login." });
   }
 });
@@ -167,7 +187,7 @@ router.post('/reset-password', async (req, res) => {
 
     await database.collection(collectionName).updateOne(filter, {
       $set: { password: hashedPassword },
-      $unset: { resetOTP: "", otpExpires: "" } 
+      $unset: { resetOTP: "", otpExpires: "" }
     });
 
     res.status(200).json({ message: "Success! Password updated." });
