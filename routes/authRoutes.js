@@ -4,6 +4,8 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const { connectDB } = require('../config/db');
+const User = require('../models/User');
+const { ObjectId } = require('mongodb');
 
 const JWT_SECRET = process.env.JWT_SECRET || "vault_secret_key_786";
 
@@ -23,7 +25,6 @@ const getAuthContext = (role, email) => {
   const cleanEmail = email ? email.trim().toLowerCase() : "";
   const collectionName = role === "admin" ? "users" : "clinets";
 
-  // ক্লায়েন্টের ক্ষেত্রে portalEmail অথবা email—যে কোনো একটি মিললেই হবে
   const filter = role === "admin"
     ? { email: cleanEmail }
     : { $or: [{ portalEmail: cleanEmail }, { email: cleanEmail }] };
@@ -31,68 +32,154 @@ const getAuthContext = (role, email) => {
   return { collectionName, filter, cleanEmail };
 };
 
-/* --- LOGIN ROUTE (FIXED & DEBUGGED) --- */
+/* --- 1. ADMIN ACCESS REQUEST (Registration) --- */
+router.post('/register-request', async (req, res) => {
+  try {
+    const { name, email, password, companyName } = req.body;
+    if (!email || !password || !name) {
+      return res.status(400).json({ error: "Name, Email and Password are required." });
+    }
+
+    const database = await connectDB();
+    const cleanEmail = email.trim().toLowerCase();
+
+    const existingUser = await database.collection('users').findOne({ email: cleanEmail });
+    if (existingUser) {
+      return res.status(400).json({ error: "Account already exists or request is pending." });
+    }
+
+    const hashedPassword = await bcrypt.hash(password.toString(), 10);
+
+    const newRequest = {
+      name,
+      email: cleanEmail,
+      password: hashedPassword,
+      companyName: companyName || "Independent Agency",
+      role: 'admin',
+      status: 'pending',
+      createdAt: new Date(),
+      isSuperAdmin: false
+    };
+
+    await database.collection('users').insertOne(newRequest);
+    res.status(201).json({ message: "Access request submitted. Please wait for admin approval." });
+  } catch (err) {
+    console.error("REGISTER REQUEST ERROR:", err);
+    res.status(500).json({ error: "Failed to submit registration request." });
+  }
+});
+
+/* --- 2. LOGIN ROUTE (With Status Check) --- */
 router.post('/login', async (req, res) => {
   try {
     const { email, password, role } = req.body;
-    console.log(`Login attempt: ${email} as ${role}`); // Debug 1
-
     if (!email || !password || !role) {
       return res.status(400).json({ error: "Please provide all credentials." });
     }
 
     const database = await connectDB();
     const { collectionName, filter } = getAuthContext(role, email);
-
-    console.log(`Searching in ${collectionName} with filter:`, JSON.stringify(filter)); // Debug 2
-
     const user = await database.collection(collectionName).findOne(filter);
 
-    if (!user) {
-      console.log("No user found in database."); // Debug 3
-      return res.status(404).json({ error: "No account found." });
+    if (!user) return res.status(404).json({ error: "No account found." });
+
+    // Status Validation
+    if (role === "admin") {
+      if (user.status === "pending") {
+        return res.status(403).json({ error: "Your account is pending approval." });
+      }
+      if (user.status === "rejected") {
+        return res.status(403).json({ error: "Access denied. Your request was rejected." });
+      }
     }
 
-    console.log("User found, checking password..."); // Debug 4
-
-    // পাসওয়ার্ড চেক
-    const inputPassword = password.toString().trim();
-    let isMatch = false;
-
-    if (user.password && (user.password.startsWith('$2a$') || user.password.startsWith('$2b$'))) {
-      isMatch = await bcrypt.compare(inputPassword, user.password);
-    } else {
-      isMatch = inputPassword === (user.password ? user.password.toString().trim() : "");
-    }
-
-    if (!isMatch) {
-      console.log("Password did not match."); // Debug 5
-      return res.status(401).json({ error: "Invalid password." });
-    }
+    // Password Validation
+    const isMatch = await bcrypt.compare(password.toString().trim(), user.password);
+    if (!isMatch) return res.status(401).json({ error: "Invalid password." });
 
     const token = jwt.sign(
-      { id: user._id, role, email: email.toLowerCase() },
+      { id: user._id, role, email: user.email, isSuperAdmin: user.isSuperAdmin || false },
       JWT_SECRET,
       { expiresIn: "7d" }
     );
-
-    console.log("Login successful, sending response..."); // Debug 6
 
     res.status(200).json({
       token,
       role,
       id: user._id,
-      name: user.name || user.companyName || "User",
-      email: user.email || user.portalEmail || email
+      name: user.name || user.companyName,
+      email: user.email || user.portalEmail,
+      status: user.status,
+      isSuperAdmin: user.isSuperAdmin || false
     });
-
   } catch (err) {
-    console.error("CRITICAL LOGIN ERROR:", err); // এটি আপনার টার্মিনালে আসল এরর দেখাবে
+    console.error("LOGIN ERROR:", err);
     res.status(500).json({ error: "Server error during login." });
   }
 });
 
-/* --- 1. FORGET PASSWORD (SEND OTP) --- */
+/* --- 3. GET ALL USERS (For Super Admin Dashboard) --- */
+router.get('/all-users', async (req, res) => {
+  try {
+    const database = await connectDB();
+    // সব ইউজার নিয়ে আসা হচ্ছে (ড্যাশবোর্ড ফিল্টার করবে)
+    const users = await database.collection('users').find({}).toArray();
+
+    // সিকিউরিটি: পাসওয়ার্ড এবং ওটিপি বাদ দিয়ে পাঠানো
+    const safeUsers = users.map(({ password, resetOTP, otpExpires, ...rest }) => rest);
+    res.status(200).json(safeUsers);
+  } catch (err) {
+    console.error("GET USERS ERROR:", err);
+    res.status(500).json({ error: "Failed to fetch users." });
+  }
+});
+
+/* --- 4. MANAGE REQUEST (Approve/Reject) --- */
+router.patch('/manage-request', async (req, res) => {
+  try {
+    const { requestId, action } = req.body; // action: 'active' or 'rejected'
+    const database = await connectDB();
+
+    const updateStatus = action === 'active' ? 'active' : 'rejected';
+
+    const user = await database.collection('users').findOne({ _id: new ObjectId(requestId) });
+    if (!user) return res.status(404).json({ error: "Request not found." });
+
+    await database.collection('users').updateOne(
+      { _id: new ObjectId(requestId) },
+      { $set: { status: updateStatus } }
+    );
+
+    // Email Notification
+    if (updateStatus === 'active') {
+      const mailOptions = {
+        from: `"Vault Security" <${process.env.EMAIL_USER}>`,
+        to: user.email,
+        subject: "Access Approved - Vault Portal",
+        html: `
+          <div style="font-family: sans-serif; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
+            <h2 style="color: #4177BC;">Account Approved!</h2>
+            <p>Hello ${user.name}, your access request for <b>${user.companyName}</b> has been approved.</p>
+            <p>You can now login to your dashboard.</p>
+            <div style="margin-top: 20px;">
+              <a href="${process.env.NEXT_PUBLIC_FRONTEND_URL || 'http://localhost:3000'}/login" 
+                 style="background: #4177BC; color: white; padding: 12px 25px; text-decoration: none; border-radius: 6px; font-weight: bold;">
+                 Login Now
+              </a>
+            </div>
+          </div>`
+      };
+      await transporter.sendMail(mailOptions);
+    }
+
+    res.status(200).json({ message: `Admin has been ${updateStatus}.` });
+  } catch (err) {
+    console.error("MANAGE REQUEST ERROR:", err);
+    res.status(500).json({ error: "Action failed." });
+  }
+});
+
+/* --- 5. FORGET PASSWORD (OTP) --- */
 router.post('/forget-password', async (req, res) => {
   try {
     const { email, role } = req.body;
@@ -105,7 +192,7 @@ router.post('/forget-password', async (req, res) => {
     if (!user) return res.status(404).json({ error: "Account not found." });
 
     const otp = generateOTP();
-    const otpExpires = new Date(Date.now() + 10 * 60000); // 10 minutes expiry
+    const otpExpires = new Date(Date.now() + 10 * 60000);
 
     await database.collection(collectionName).updateOne(filter, {
       $set: { resetOTP: otp, otpExpires: otpExpires }
@@ -116,81 +203,91 @@ router.post('/forget-password', async (req, res) => {
       to: cleanEmail,
       subject: `${otp} is your recovery code`,
       html: `
-        <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; max-width: 480px; margin: 0 auto; border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden; background-color: #ffffff;">
-          <div style="background-color: #2563eb; padding: 24px; text-align: center;">
-            <h1 style="color: #ffffff; margin: 0; font-size: 24px; text-transform: uppercase; letter-spacing: 2px;">Vault</h1>
+        <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden;">
+          <div style="background-color: #4177BC; padding: 24px; text-align: center;">
+            <h1 style="color: #ffffff; margin: 0;">Vault</h1>
           </div>
           <div style="padding: 32px; text-align: center;">
-            <h2 style="color: #111827; margin-bottom: 16px;">Password Reset Request</h2>
-            <p style="color: #4b5563; font-size: 16px; line-height: 24px;">Someone requested to reset your password. Use the following code to proceed:</p>
-            <div style="margin: 32px 0; background-color: #f3f4f6; border-radius: 8px; padding: 20px;">
-              <span style="font-size: 36px; font-weight: bold; letter-spacing: 6px; color: #2563eb;">${otp}</span>
+            <h2>Password Reset Code</h2>
+            <div style="margin: 32px 0; background-color: #f3f4f6; padding: 20px; font-size: 36px; font-weight: bold; letter-spacing: 6px; color: #4177BC;">
+              ${otp}
             </div>
-            <p style="color: #9ca3af; font-size: 14px;">This code will expire in 10 minutes. If you did not make this request, please ignore this email.</p>
+            <p>Expires in 10 minutes.</p>
           </div>
-          <div style="background-color: #f9fafb; padding: 16px; text-align: center; border-top: 1px solid #e5e7eb;">
-            <p style="color: #9ca3af; font-size: 12px; margin: 0;">&copy; 2026 Vault Security Portal.</p>
-          </div>
-        </div>
-      `
+        </div>`
     };
 
     await transporter.sendMail(mailOptions);
     res.status(200).json({ message: "OTP sent successfully." });
-
   } catch (err) {
     res.status(500).json({ error: "Failed to send OTP." });
   }
 });
 
-/* --- 2. VERIFY OTP CODE --- */
+/* --- 6. VERIFY OTP --- */
 router.post('/verify-code', async (req, res) => {
   try {
     const { email, code, role } = req.body;
-    if (!email || !code || !role) return res.status(400).json({ error: "Information missing." });
-
     const database = await connectDB();
     const { collectionName, filter } = getAuthContext(role, email);
-
     const user = await database.collection(collectionName).findOne(filter);
 
     if (!user || user.resetOTP !== code) {
       return res.status(400).json({ error: "Invalid verification code." });
     }
-
     if (new Date() > new Date(user.otpExpires)) {
       return res.status(400).json({ error: "OTP has expired." });
     }
-
-    res.status(200).json({ message: "Code verified. You may now reset your password." });
+    res.status(200).json({ message: "Code verified." });
   } catch (err) {
     res.status(500).json({ error: "Verification failed." });
   }
 });
 
-/* --- 3. RESET PASSWORD --- */
+
+
+
+
+/* --- 4.1 DELETE USER (Native MongoDB Driver Version) --- */
+router.delete("/delete-user/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const database = await connectDB();
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "Invalid ID format" });
+    }
+
+    const result = await database.collection('users').deleteOne({ _id: new ObjectId(id) });
+
+    if (result.deletedCount === 0) {
+      const clientResult = await database.collection('clinets').deleteOne({ _id: new ObjectId(id) });
+
+      if (clientResult.deletedCount === 0) {
+        return res.status(404).json({ error: "User not found in system." });
+      }
+    }
+
+    res.status(200).json({ message: "Entity successfully purged from database" });
+  } catch (error) {
+    console.error("Delete Error:", error);
+    res.status(500).json({ error: "Database communication failure" });
+  }
+});
+/* --- 7. RESET PASSWORD --- */
 router.post('/reset-password', async (req, res) => {
   try {
     const { email, code, newPassword, role } = req.body;
-    if (!email || !code || !newPassword || !role) return res.status(400).json({ error: "All fields are required." });
-
     const database = await connectDB();
     const { collectionName, filter } = getAuthContext(role, email);
 
-    const user = await database.collection(collectionName).findOne(filter);
-
-    if (!user || user.resetOTP !== code) {
-      return res.status(400).json({ error: "Unauthorized attempt." });
-    }
-
     const hashedPassword = await bcrypt.hash(newPassword.toString(), 10);
-
     await database.collection(collectionName).updateOne(filter, {
       $set: { password: hashedPassword },
       $unset: { resetOTP: "", otpExpires: "" }
     });
 
-    res.status(200).json({ message: "Success! Password updated." });
+    res.status(200).json({ message: "Password updated successfully." });
   } catch (err) {
     res.status(500).json({ error: "Failed to reset password." });
   }
