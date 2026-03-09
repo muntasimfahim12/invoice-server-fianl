@@ -1,10 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const { ObjectId } = require('mongodb');
-const { connectDB } = require('../config/db');
+const { connectDB, transporter } = require('../config/db');
 const bcrypt = require('bcryptjs');
 const PDFDocument = require('pdfkit');
-const nodemailer = require('nodemailer');
+// const nodemailer = require('nodemailer');
 const Settings = require('../models/Settings');
 
 const { generateGenieInvoicePDF } = require('./invoiceRoutes');
@@ -64,8 +64,8 @@ router.get('/projects', async (req, res) => {
 
                 return {
                     ...m,
-                    isPayable: isPayable, 
-                    isLocked: !isPaid && !isDateReached 
+                    isPayable: isPayable,
+                    isLocked: !isPaid && !isDateReached
                 };
             });
 
@@ -153,35 +153,54 @@ router.post('/manage-admins', async (req, res) => {
 /** ⚙️ GLOBAL SETTINGS: FETCH & UPDATE **/
 router.get('/settings', async (req, res) => {
     try {
-        let settings = await Settings.findOne({});
+        const database = await connectDB();
+        const settingsColl = database.collection("settings");
+
+        // আপনার ডেটাতে যেহেতু id: "admin_config" আছে, সেটি দিয়েই খুঁজি
+        let settings = await settingsColl.findOne({ id: "admin_config" });
+
         if (!settings) {
+            // যদি না থাকে, আপনার দেওয়া ফরম্যাট অনুযায়ী ডিফল্ট ডেটা পাঠান
             return res.json({
-                businessName: "My Agency",
+                id: "admin_config",
+                businessName: "Your Brand",
                 invPrefix: "INV-",
                 currency: "USD",
-                taxRate: 0
+                taxRate: 0,
+                adminEmail: "admin@example.com"
             });
         }
         res.json(settings);
     } catch (err) {
-        res.status(500).json({ error: "Error fetching system settings" });
+        console.error("Fetch Error:", err);
+        res.status(500).json({ error: "Settings fetch failed" });
     }
 });
 
 router.post('/settings', async (req, res) => {
     try {
         const data = req.body;
+        const database = await connectDB();
+        const settingsColl = database.collection("settings");
+
+        // ফ্রন্টএন্ড থেকে আসা _id ডিলিট করুন যাতে ডুপ্লিকেট কি এরর না হয়
         if (data._id) delete data._id;
 
-        const updatedSettings = await Settings.findOneAndUpdate(
-            {},
+        // আপডেট করার সময় id: "admin_config" ফিক্সড রাখুন
+        const result = await settingsColl.findOneAndUpdate(
+            { id: "admin_config" },
             { $set: { ...data, lastUpdated: new Date() } },
-            { new: true, upsert: true }
+            { upsert: true, returnDocument: 'after' }
         );
 
-        res.json({ success: true, message: "System Architecture Updated!", settings: updatedSettings });
+        res.json({
+            success: true,
+            message: "System Updated!",
+            settings: result.value || result
+        });
     } catch (err) {
-        res.status(500).json({ error: "Global sync failed" });
+        console.error("Update Error:", err);
+        res.status(500).json({ error: "Failed to save settings" });
     }
 });
 
@@ -197,19 +216,28 @@ router.patch('/update-milestone-status', async (req, res) => {
         const db = await connectDB();
         const clientsColl = db.collection("clinets");
         const invoiceColl = db.collection("invoices");
+        const settingsColl = db.collection("settings"); // সেটিংস কালেকশন ধরুন
 
-        // ১. গ্লোবাল সেটিংস ফেচ করা (Invoice Prefix & Currency এর জন্য)
-        const globalSettings = await Settings.findOne({}) || { invPrefix: "INV-", currency: "USD", businessName: "Agency" };
+        // ১. গ্লোবাল সেটিংস ফেচ করা (Native Driver ব্যবহার করে)
+        // Mongoose (Settings.findOne) এর বদলে settingsColl.findOne ব্যবহার করুন
+        const globalSettings = await settingsColl.findOne({}) || {
+            invPrefix: "INV-",
+            currency: "USD",
+            businessName: "Agency"
+        };
 
         const client = await clientsColl.findOne({ "projects._id": projectId });
         if (!client) return res.status(404).json({ error: "Client/Project not found" });
 
         const project = client.projects.find(p => String(p._id) === String(projectId));
         const milestone = project.milestones[milestoneIndex];
+
+        if (!milestone) return res.status(404).json({ error: "Milestone not found at this index" });
+
         const status = isCompleted ? "Paid" : "Unpaid";
         const paymentValue = Number(amount || milestone.amount);
 
-        // ২. ডাটাবেস আপডেট
+        // ২. ডাটাবেস আপডেট (মাইলস্টোন স্ট্যাটাস এবং টোটাল পেইড)
         const updateDoc = {
             $set: {
                 [`projects.$.milestones.${milestoneIndex}.isCompleted`]: isCompleted,
@@ -228,9 +256,9 @@ router.patch('/update-milestone-status', async (req, res) => {
             updateDoc
         );
 
-        // ৩. ইনভয়েস ও ইমেইল লজিক
+        // ৩. ইনভয়েস ও ইমেইল লজিক
         if (isCompleted && updateResult.matchedCount > 0) {
-            const invoiceId = `${globalSettings.invPrefix}${Date.now().toString().slice(-6)}`;
+            const invoiceId = `${globalSettings.invPrefix || 'INV-'}${Date.now().toString().slice(-6)}`;
 
             const invoiceData = {
                 invoiceId,
@@ -240,7 +268,7 @@ router.patch('/update-milestone-status', async (req, res) => {
                 clientName: client.name,
                 clientEmail: client.email.toLowerCase().trim(),
                 amount: paymentValue,
-                currency: globalSettings.currency, // সেটিংস থেকে ডাইনামিক কারেন্সি
+                currency: globalSettings.currency,
                 method: paymentMethod || "Online Payment",
                 status: "Paid",
                 paymentDate: new Date(),
@@ -248,7 +276,7 @@ router.patch('/update-milestone-status', async (req, res) => {
                     idx === milestoneIndex ? { ...m, status: "Paid", isCompleted: true } : m
                 ),
                 createdAt: new Date(),
-                businessName: globalSettings.businessName // সেটিংস থেকে বিজনেস নেম
+                businessName: globalSettings.businessName
             };
 
             await invoiceColl.insertOne(invoiceData);
@@ -257,50 +285,44 @@ router.patch('/update-milestone-status', async (req, res) => {
             const doc = new PDFDocument({ size: 'A4', margin: 50 });
             let buffers = [];
             doc.on('data', chunk => buffers.push(chunk));
+
             doc.on('end', async () => {
                 const pdfBuffer = Buffer.concat(buffers);
-
-                const transporter = nodemailer.createTransport({
-                    service: 'gmail',
-                    auth: {
-                        user: process.env.EMAIL_USER,
-                        pass: process.env.EMAIL_PASS
-                    }
-                });
 
                 const mailOptions = {
                     from: `"${globalSettings.businessName}" <${process.env.EMAIL_USER}>`,
                     to: invoiceData.clientEmail,
                     subject: `Payment Received: Invoice #${invoiceId}`,
                     html: `
-                        <div style="font-family: Arial, sans-serif; max-width: 600px; border: 1px solid #eee; padding: 20px;">
-                            <h2 style="color: #2ecc71;">Payment Successful!</h2>
+                        <div style="font-family: Arial, sans-serif; max-width: 600px; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
+                            <h2 style="color: #4177BC;">Payment Successful!</h2>
                             <p>Hi <b>${client.name}</b>,</p>
-                            <p>We've received your payment for <b>${milestone.name}</b>.</p>
-                            <table style="width: 100%; background: #f9f9f9; padding: 10px;">
-                                <tr><td>Amount Paid:</td><td><b>${paymentValue} ${globalSettings.currency}</b></td></tr>
-                                <tr><td>Invoice ID:</td><td>#${invoiceId}</td></tr>
-                                <tr><td>Method:</td><td>${invoiceData.method}</td></tr>
-                            </table>
-                            <p>Your official invoice is attached to this email.</p>
-                            <p>Thanks for working with <b>${globalSettings.businessName}</b>!</p>
+                            <p>We've received your payment for <b>${milestone.name || project.name}</b>.</p>
+                            <div style="background: #f4f7fa; padding: 15px; border-radius: 10px; margin: 15px 0;">
+                                <p style="margin: 5px 0;">Amount Paid: <b>${paymentValue} ${globalSettings.currency}</b></p>
+                                <p style="margin: 5px 0;">Invoice ID: #${invoiceId}</p>
+                            </div>
+                            <p>The official PDF invoice is attached to this email.</p>
+                            <p>Best regards,<br><b>${globalSettings.businessName}</b></p>
                         </div>
                     `,
-                    attachments: [{ filename: `${invoiceId}.pdf`, content: pdfBuffer }]
+                    attachments: [{ filename: `Invoice-${invoiceId}.pdf`, content: pdfBuffer }]
                 };
 
                 try {
                     await transporter.sendMail(mailOptions);
+                    console.log(`✅ Professional Invoice Sent: ${invoiceData.clientEmail}`);
                 } catch (emailErr) {
-                    console.error("Email Error:", emailErr);
+                    console.error("❌ Email Sending Failed:", emailErr);
                 }
             });
+
 
             if (typeof generateGenieInvoicePDF === 'function') {
                 generateGenieInvoicePDF({ ...invoiceData, settings: globalSettings }, doc);
             } else {
-                doc.fontSize(25).text('INVOICE', { align: 'center' });
-                doc.fontSize(12).text(`Invoice ID: ${invoiceId}`, 50, 100);
+                doc.fontSize(25).text('PAYMENT RECEIPT', { align: 'center' });
+                doc.fontSize(12).text(`Invoice ID: #${invoiceId}`, 50, 100);
                 doc.text(`Project: ${project.name}`);
                 doc.text(`Amount: ${paymentValue} ${globalSettings.currency}`);
                 doc.end();
@@ -308,7 +330,7 @@ router.patch('/update-milestone-status', async (req, res) => {
 
             return res.json({
                 success: true,
-                message: "Database updated, invoice saved, and email sent.",
+                message: "Sync Complete: DB updated & Styled Invoice sent.",
                 invoiceId
             });
         }
@@ -317,7 +339,7 @@ router.patch('/update-milestone-status', async (req, res) => {
 
     } catch (err) {
         console.error("Critical Sync Error:", err);
-        res.status(500).json({ error: "System failed to sync payment" });
+        res.status(500).json({ error: "Internal Server Error during payment sync" });
     }
 });
 

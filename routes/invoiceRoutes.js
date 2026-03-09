@@ -5,6 +5,7 @@ const PDFDocument = require('pdfkit');
 const nodemailer = require('nodemailer');
 const multer = require('multer');
 const { connectDB } = require('../config/db');
+const { sendReminderMail } = require('../utils/emailHelper');
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -110,11 +111,14 @@ const generateGenieInvoicePDF = (data, doc) => {
     doc.end();
 };
 
+
+
 /** 1️⃣ GET INVOICES (Master Fetch: Admin sees all, Client sees only theirs) **/
 router.get('/', async (req, res) => {
     try {
         const { search, status, email, clientEmail, role } = req.query;
 
+        // ✅ কানেকশন এখানে নিয়ে আসুন (ফাংশনের ভেতরে)
         const database = await connectDB();
         const collection = database.collection("invoices");
 
@@ -171,7 +175,9 @@ router.post('/', async (req, res) => {
         const database = await connectDB();
         const invoiceCollection = database.collection("invoices");
         const usersCollection = database.collection("users");
-        const { adminEmail, clientEmail, ...rest } = req.body;
+
+        // সংশোধন: req.body থেকে ডাটা বের করে নিন
+        const { adminEmail, clientEmail, projectId, milestone, project, paymentMethod } = req.body;
 
         const invoiceData = {
             invoiceId: `INV-${Date.now().toString().slice(-6)}`,
