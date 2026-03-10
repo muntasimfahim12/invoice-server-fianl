@@ -2,7 +2,6 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 
-// ১. আপনার নতুন তৈরি করা cronJobs হেল্পারটি ইম্পোর্ট করুন
 const setupCronJobs = require('./utils/cronJobs'); 
 
 // Routes Import
